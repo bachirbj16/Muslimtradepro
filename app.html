@@ -1107,6 +1107,34 @@ function volma(v,p){
   for(let i=p-1;i<v.length;i++)r[i]=v.slice(i-p+1,i+1).reduce((a,b)=>a+b,0)/p;
   return r;
 }
+
+// ── MACD (12/26/9) ────────────────────────────────
+function macd(prices,fast=12,slow=26,sigP=9){
+  const ef=ema(prices,fast), es=ema(prices,slow);
+  const ml=prices.map((_,i)=>ef[i]!=null&&es[i]!=null?ef[i]-es[i]:null);
+  const sl=new Array(ml.length).fill(null);
+  const k2=2/(sigP+1); let prev=null;
+  for(let i=0;i<ml.length;i++){
+    if(ml[i]==null) continue;
+    prev = prev==null ? ml[i] : ml[i]*k2+prev*(1-k2);
+    sl[i]=prev;
+  }
+  return {macd:ml, signal:sl, hist:ml.map((v,i)=>v!=null&&sl[i]!=null?v-sl[i]:null)};
+}
+
+// ── Bollinger Bands (20,2) ────────────────────────
+function bbands(prices,p=20,mult=2){
+  const upper=[],mid=[],lower=[],pctB=[];
+  for(let i=0;i<prices.length;i++){
+    if(i<p-1){upper.push(null);mid.push(null);lower.push(null);pctB.push(null);continue;}
+    const sl=prices.slice(i-p+1,i+1);
+    const mn=sl.reduce((a,b)=>a+b,0)/p;
+    const sd=Math.sqrt(sl.reduce((s,v)=>s+(v-mn)**2,0)/p);
+    upper.push(mn+mult*sd); mid.push(mn); lower.push(mn-mult*sd);
+    pctB.push(sd>0?(prices[i]-(mn-mult*sd))/(2*mult*sd):0.5);
+  }
+  return {upper,mid,lower,pctB};
+}
 function toWeekly(daily){
   const w={};
   daily.forEach(d=>{
@@ -1123,10 +1151,14 @@ function toWeekly(daily){
 function analyze(prices,spyMap,minF,tfCfg=null){
   if(prices.length<20)return null;
   const cl=prices.map(p=>p.close),hi=prices.map(p=>p.high),lo=prices.map(p=>p.low),vo=prices.map(p=>p.vol),dt=prices.map(p=>p.date);
-  // Use tfCfg params if provided, else defaults (swing trading)
   const EF=tfCfg?.emaF||9, ES=tfCfg?.emaS||21, RP=tfCfg?.rsiP||14, AP=tfCfg?.adxP||14;
   const ADX_MIN=tfCfg?.adxMin||15, RSI_LO=tfCfg?.rsiLo||35, RSI_HI=tfCfg?.rsiHi||70;
   const e9=ema(cl,EF),e21=ema(cl,ES),rv=rsi(cl,RP),av=adx(hi,lo,cl,AP),vm=volma(vo,20);
+
+  // ── Additional professional indicators ────────────
+  const mc = macd(cl, 12, 26, 9);
+  const bb = bbands(cl, 20, 2);
+
   const n=prices.length-1;
   if(!e9[n]||!e21[n])return null;
   let cup=false,cdn=false;
@@ -1137,18 +1169,61 @@ function analyze(prices,spyMap,minF,tfCfg=null){
     }
   }
   const above=e9[n]>e21[n];
-  const rn=rv[n]??50,an=av[n]??0,vn=vo[n],vm20=vm[n]??0;
+  const rn=rv[n]??50, an=av[n]??0, vn=vo[n], vm20=vm[n]??0;
+
+  // ── MACD confirmation ─────────────────────────────
+  const macdHist     = mc.hist[n]??0;
+  const macdHistPrev = mc.hist[n-1]??0;
+  const macdBull = macdHist > 0 && macdHist > macdHistPrev;  // histogram rising above zero
+  const macdBear = macdHist < 0 && macdHist < macdHistPrev;  // histogram falling below zero
+
+  // ── Bollinger Band position ───────────────────────
+  const pctB   = bb.pctB[n]??0.5;        // 0=lower band, 1=upper band
+  const bbBull = pctB > 0.5 && pctB < 0.85; // price in upper half, not overbought
+  const bbBear = pctB < 0.5 && pctB > 0.15; // price in lower half, not oversold
+
+  // ── Market structure: higher highs / lower lows ───
+  const lookMS = Math.min(10, n-1);
+  const prevHi = Math.max(...hi.slice(n-lookMS, n));
+  const prevLo = Math.min(...lo.slice(n-lookMS, n));
+  const structureBull = cl[n] > prevHi * 0.998; // breaking above recent highs
+  const structureBear = cl[n] < prevLo * 1.002;  // breaking below recent lows
+
+  // ── Session filter: US market hours only for intraday ──
+  const isIntraday = ['1min','5min','15min','30min','1h'].includes(tfCfg?.interval);
+  let sessionOk = true;
+  if(isIntraday){
+    const lastDate = dt[n];
+    if(lastDate && lastDate.includes(' ')){
+      const timePart = lastDate.split(' ')[1];
+      const [hh, mm] = timePart.split(':').map(Number);
+      const totalMin = hh*60 + mm;
+      // US market: 09:30-15:45 ET (avoid last 15 min choppiness)
+      sessionOk = totalMin >= 570 && totalMin <= 945;
+    }
+  }
+
+  // ── 5 core filters (same as before) ──────────────
   const f1=cup||cdn;
   const f2b=rn>=RSI_LO&&rn<=RSI_HI, f2s=rn>=(RSI_LO-5)&&rn<=(RSI_HI-5);
   const f3=an>ADX_MIN;
   const f4=spyMap?(spyMap[dt[n]]!==false):true;
   const f5=vm20>0?vn>=vm20*0.7:true;
   const ok=[f1,f2b||f2s,f3,f4,f5].filter(Boolean).length;
+
+  // ── Direction with MACD + BB + Structure confirmation ──
   let dir='ESPERAR';
-  if(ok>=Math.min(minF,3)){
-    if(above&&f2b)dir='COMPRAR';
-    else if(!above&&f2s)dir='VENDER';
+  if(ok>=Math.min(minF,3) && sessionOk){
+    if(above && f2b){
+      // Strong buy: need at least 1 extra confirmation
+      const extraConf = (macdBull?1:0) + (bbBull?1:0) + (structureBull?1:0);
+      dir = extraConf >= 1 ? 'COMPRAR' : 'ESPERAR';
+    } else if(!above && f2s){
+      const extraConf = (macdBear?1:0) + (bbBear?1:0) + (structureBear?1:0);
+      dir = extraConf >= 1 ? 'VENDER' : 'ESPERAR';
+    }
   }
+
   const lp=cl[n],pp=cl[n-1]||lp,dec=lp<10?4:2;
 
   // ══════════════════════════════════════════════════
@@ -1256,6 +1331,13 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const dec2 = lp<5?5:lp<50?3:2;
   const fmt = v => v.toFixed(dec2);
 
+  // Extra confirmation score for display
+  const extraScore = dir==='COMPRAR'
+    ? (macdBull?1:0)+(bbBull?1:0)+(structureBull?1:0)
+    : dir==='VENDER'
+    ? (macdBear?1:0)+(bbBear?1:0)+(structureBear?1:0)
+    : 0;
+
   return{
     dir,ok,
     fd:{ema:{ok:f1,v:cup?`↑Cruce EMA${EF}/${ES}`:cdn?`↓Cruce EMA${EF}/${ES}`:above?`EMA${EF}>EMA${ES}`:`EMA${EF}<EMA${ES}`},
@@ -1263,6 +1345,11 @@ function analyze(prices,spyMap,minF,tfCfg=null){
         spy:{ok:f4,v:f4?'OK':'Bajista'},vol:{ok:f5,v:f5?'↑Alto':'↓Bajo'}},
     price:lp.toFixed(dec),chg:(((lp-pp)/pp)*100).toFixed(2),
     rsiVal:rn.toFixed(1),adxVal:an.toFixed(1),
+    macdHist: macdHist.toFixed(dec2),
+    macdBull, macdBear,
+    bbPctB: (pctB*100).toFixed(0),
+    extraScore,
+    sessionOk,
     levels:{
       entryLow:  fmt(entryLow),
       entryHigh: fmt(entryHigh),
@@ -1409,6 +1496,52 @@ async function _fetchAVonce(ticker, days, interval='1day', outsize=0) {
   return data;
 }
 
+
+// ════════════════════════════════════════════
+// EARNINGS & ECONOMIC CALENDAR
+// Twelvedata free endpoints
+// ════════════════════════════════════════════
+async function fetchEarningsWarnings(tickers, tdKey) {
+  // Check which tickers have earnings in next 7 days
+  const warnings = {};
+  if(!tdKey) return warnings;
+  try {
+    const url = `https://api.twelvedata.com/earnings?symbol=${tickers.slice(0,10).join(',')}&period=next&outputsize=10&apikey=${tdKey}`;
+    const r = await fetch(url);
+    if(!r.ok) return warnings;
+    const data = await r.json();
+    const list = Array.isArray(data) ? data : (data.earnings || []);
+    const today = new Date();
+    const in7 = new Date(today.getTime() + 7*86400000);
+    list.forEach(e => {
+      if(!e.symbol || !e.date) return;
+      const eDate = new Date(e.date);
+      if(eDate >= today && eDate <= in7){
+        const days = Math.ceil((eDate-today)/86400000);
+        warnings[e.symbol.toUpperCase()] =
+          `Earnings en ${days} día${days>1?'s':''} (${e.date}) — ${e.time==='bmo'?'Pre-market':'After-hours'}. Alto riesgo.`;
+      }
+    });
+  } catch(e) { /* silent fail */ }
+  return warnings;
+}
+
+async function fetchEconomicEvents(tdKey) {
+  // Get major economic events this week
+  if(!tdKey) return [];
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const url = `https://api.twelvedata.com/economic_calendar?start_date=${today}&importance=high&apikey=${tdKey}`;
+    const r = await fetch(url);
+    if(!r.ok) return [];
+    const data = await r.json();
+    const events = data.result || data.events || [];
+    return events
+      .filter(ev => ev.importance === 'high' || ev.impact === 'High')
+      .slice(0,5)
+      .map(ev => `${ev.event||ev.name} (${ev.date||ev.time})`);
+  } catch(e) { return []; }
+}
 // ════════════════════════════════════════════
 // SCANNER
 // ════════════════════════════════════════════
@@ -1479,6 +1612,16 @@ async function runScanner(){
     const dSigs=[],wSigs=[],errs=[];
     const DELAY_MS = 8000; // 1 req per 8s = 7.5/min, safely under 8/min limit
 
+    // Pre-fetch earnings warnings for all selected tickers
+    sp('Verificando earnings próximos...');
+    const tdKey = localStorage.getItem(K_TDKEY) || '';
+    const earningsMap = await fetchEarningsWarnings(selected, tdKey);
+    const econEvents  = await fetchEconomicEvents(tdKey);
+    if(Object.keys(earningsMap).length > 0)
+      dbg.push(`Earnings próximos: ${Object.keys(earningsMap).join(', ')}`);
+    if(econEvents.length > 0)
+      dbg.push(`Eventos macro: ${econEvents.join(' | ')}`);
+
     // For each active timeframe, fetch and analyze all tickers
     for (const tfCfg of activeTFs) {
       sp(`--- Escaneando ${tfCfg.label} (${selected.length} activos) ---`);
@@ -1500,7 +1643,16 @@ async function runScanner(){
           const wt = raw.map(p => ({...p, ticker: tick.toUpperCase()}));
           const res = analyze(wt, spyMap, minF, tfCfg);
           dbg.push(`${tick} ${tfCfg.label}: ${res ? res.dir+' '+res.ok+'/5' : 'null'}`);
-          if (res) dSigs.push({ticker: tick.toUpperCase(), tf: 'daily', tfLabel: tfCfg.label, tfCfg, ...res});
+          if (res) {
+            const tickUpper = tick.toUpperCase();
+            const earningsWarn = earningsMap[tickUpper] || null;
+            // Session warning for intraday outside US hours
+            const sessionWarn = (res.sessionOk===false)
+              ? 'Fuera de horario US (09:30-16:00 ET) — señal menos fiable'
+              : null;
+            dSigs.push({ticker: tickUpper, tf: 'daily', tfLabel: tfCfg.label, tfCfg,
+              earningsWarn, sessionWarn, ...res});
+          }
         } catch(e) {
           errs.push(`${tick} ${tfCfg.label}: ${e.message}`);
           dbg.push(`${tick} ${tfCfg.label} ERROR: ${e.message}`);
@@ -1626,11 +1778,32 @@ async function runScanner(){
           <div class="sig-m"><div class="sig-ml">RSI</div><div class="sig-mv" style="color:${parseFloat(s.rsiVal)>70?'var(--red-t)':parseFloat(s.rsiVal)<35?'var(--amber-t)':'var(--green-t)'};">${s.rsiVal}</div></div>
           <div class="sig-m"><div class="sig-ml">${t('sig_change')}</div><div class="sig-mv" style="color:${chg?'var(--green-t)':'var(--red-t)'};">${chg?'+':''}${s.chg}%</div></div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;padding:0 16px 10px;">
+          <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+            <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">MACD</div>
+            <div style="font-size:10px;font-weight:700;color:${s.macdBull?'var(--green-t)':s.macdBear?'var(--red-t)':'var(--t4)'};">${s.macdBull?'↑ Bull':s.macdBear?'↓ Bear':'Neutral'}</div>
+          </div>
+          <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+            <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">BB %B</div>
+            <div style="font-size:10px;font-weight:700;color:${parseFloat(s.bbPctB)>70?'var(--amber-t)':parseFloat(s.bbPctB)<30?'var(--amber-t)':'var(--green-t)'};">${s.bbPctB??'—'}%</div>
+          </div>
+          <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+            <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">Confirmación</div>
+            <div style="font-size:10px;font-weight:700;color:${(s.extraScore||0)>=2?'var(--green-t)':(s.extraScore||0)===1?'var(--amber-t)':'var(--red-t)'};">${s.extraScore||0}/3 ✓</div>
+          </div>
+        </div>
+        ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''}
+        ${s.sessionWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:9px;font-size:11px;color:var(--red-t);">🕐 ${s.sessionWarn}</div>`:''}
+
         ${levelsHtml}
         ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'${s.tf}')">✨ ${t('sig_import')}</button></div>`:''}
       </div>`;
     }).join('');
 
+    // Economic events banner
+    const econBanner = econEvents.length>0
+      ? `<div class="ban ban-w" style="margin-bottom:8px;">📅 <strong>Eventos macro esta semana:</strong> ${econEvents.join(' · ')}</div>`
+      : '';
     const noBuy=all.length>0&&buys.length===0&&sells.length===0
       ?`<div class="ban ban-w" style="margin-bottom:10px;">${t('no_signal')} Se muestran todos los activos con sus métricas.</div>`:'';
     const errHtml=errs.length?`<div class="ban ban-e" style="margin-top:8px;"><span>⚠️</span><div><b>${errs.length} error(es):</b><br>${errs.map(e=>`<small>${e}</small>`).join('<br>')}</div></div>`:'';
@@ -1644,7 +1817,7 @@ async function runScanner(){
         <div class="tile" style="background:var(--amber-bg);border-radius:13px;padding:12px;"><div class="tl" style="font-size:8px;margin-bottom:5px;color:var(--t4);">${t('tile_wait')}</div><div class="tv" style="font-size:20px;color:var(--amber-t);">${waits.length}</div></div>
         <div class="tile" style="background:var(--muted2);border-radius:13px;padding:12px;"><div class="tl" style="font-size:8px;margin-bottom:5px;color:var(--t4);">${t('tile_errors')}</div><div class="tv" style="font-size:20px;color:${errs.length?'var(--red-t)':'var(--t4)'};">${errs.length}</div></div>
       </div>
-      ${noBuy}
+      ${econBanner}${noBuy}
       ${sorted.length===0?`<div class="empty"><div class="empty-icon">📭</div><div style="font-weight:700;color:var(--t2);">${t('no_results')} — abre el log abajo</div></div>`:`<div class="sig-grid">${cards}</div>`}
       ${errHtml}${dbgHtml}`;
 
@@ -3392,6 +3565,23 @@ function runDemo() {
         <div class="sig-m"><div class="sig-ml">RSI</div><div class="sig-mv">${s.rsiVal}</div></div>
         <div class="sig-m"><div class="sig-ml">${t('sig_change')}</div><div class="sig-mv" style="color:${chg?'var(--green-t)':'var(--red-t)'};">${chg?'+':''}${s.chg}%</div></div>
       </div>
+      ${s.macdBull!=null||s.macdBear!=null?`
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;padding:0 16px 10px;">
+        <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+          <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">MACD</div>
+          <div style="font-size:10px;font-weight:700;color:${s.macdBull?'var(--green-t)':s.macdBear?'var(--red-t)':'var(--t4)'};">${s.macdBull?'↑ Bull':s.macdBear?'↓ Bear':'Neutral'}</div>
+        </div>
+        <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+          <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">BB %B</div>
+          <div style="font-size:10px;font-weight:700;">${s.bbPctB??'—'}%</div>
+        </div>
+        <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
+          <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">Confirmación</div>
+          <div style="font-size:10px;font-weight:700;color:${(s.extraScore||0)>=2?'var(--green-t)':(s.extraScore||0)===1?'var(--amber-t)':'var(--red-t)'};">${s.extraScore||0}/3 ✓</div>
+        </div>
+      </div>`:''}
+      ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''}
+
       ${levelsHtml}
       ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'daily')">✨ ${t('sig_import')}</button></div>`:''}
     </div>`;
