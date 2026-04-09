@@ -1618,6 +1618,109 @@ async function fetchEconomicEvents(tdKey) {
       .map(ev => `${ev.event||ev.name} (${ev.date||ev.time})`);
   } catch(e) { return []; }
 }
+
+// -- Fetch fundamentals: statistics + latest news ----------------
+// Session cache: don't refetch fundamentals for same ticker within 1 hour
+const _fundCache = {};
+const _fundCacheTs = {};
+const FUND_CACHE_TTL = 3600000; // 1 hour
+
+async function fetchFundamentals(tickers, tdKey) {
+  const data = {};
+  if(!tdKey || !tickers.length) return data;
+  
+  // Use cached data if available and fresh
+  const now = Date.now();
+  const needFetch = tickers.filter(t => {
+    if(_fundCache[t] && (now - (_fundCacheTs[t]||0)) < FUND_CACHE_TTL) {
+      data[t] = _fundCache[t];
+      return false; // skip fetch
+    }
+    return true;
+  });
+  if(!needFetch.length) return data;
+  const FOREX_METAL = new Set(['XAUUSD','XAGUSD','EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD']);
+  const stockTickers = needFetch.filter(t => !FOREX_METAL.has(t));
+  if(!stockTickers.length) return data;
+
+  const batches = [];
+  for(let i=0;i<stockTickers.length;i+=8) batches.push(stockTickers.slice(i,i+8));
+
+  for(const batch of batches) {
+    const sym = batch.join(',');
+
+    // Statistics (P/E, EPS, market cap, revenue)
+    try {
+      const statsJson = await (await fetch(`https://api.twelvedata.com/statistics?symbol=${sym}&apikey=${tdKey}`)).json();
+      const parseStats = (obj) => {
+        if(!obj || obj.status==='error') return null;
+        const vs = obj.valuations_metrics||{};
+        const fs = (obj.financials?.income_statement)||{};
+        const bs = obj.balance_sheet||{};
+        return {
+          pe:        vs.trailing_pe!=null ? parseFloat(vs.trailing_pe).toFixed(1) : null,
+          eps:       vs.trailing_eps!=null ? parseFloat(vs.trailing_eps).toFixed(2) : null,
+          mktcap:    bs.market_capitalization!=null ? fmtCap(bs.market_capitalization) : null,
+          revenue:   fs.revenue!=null ? fmtCap(fs.revenue) : null,
+          revGrowth: fs.revenue_growth!=null ? (parseFloat(fs.revenue_growth)*100).toFixed(1)+'%' : null,
+        };
+      };
+      if(batch.length===1){
+        const s=parseStats(statsJson); if(s) data[batch[0]]={...(data[batch[0]]||{}),...s};
+      } else {
+        batch.forEach(t=>{const s=parseStats(statsJson[t]);if(s) data[t]={...(data[t]||{}),...s};});
+      }
+    } catch(e) {}
+
+    // Latest news headline - fetch per ticker (Twelvedata /news is single-symbol)
+    // Limit to 6 per batch to balance API credits vs coverage
+    for(const ticker of batch.slice(0,6)) {
+      try {
+        const nj = await (await fetch(`https://api.twelvedata.com/news?symbol=${ticker}&outputsize=3&apikey=${tdKey}`)).json();
+        const arr = Array.isArray(nj) ? nj : (nj.data || []);
+        if(arr.length) {
+          const a = arr[0];
+          data[ticker] = { ...(data[ticker]||{}),
+            newsTitle:     a.title ? a.title.slice(0,80)+(a.title.length>80?'...':'') : null,
+            newsUrl:       a.url||null,
+            newsAgo:       a.datetime ? fmtNewsAge(a.datetime) : null,
+            newsSentiment: a.sentiment||null,
+          };
+        }
+      } catch(e) {}
+    }
+
+    if(batches.length>1) await new Promise(r=>setTimeout(r,300));
+  }
+  
+  // Store results in session cache
+  const nowTs = Date.now();
+  Object.keys(data).forEach(t => {
+    _fundCache[t] = data[t];
+    _fundCacheTs[t] = nowTs;
+  });
+  
+  return data;
+}
+
+function fmtCap(n) {
+  if(n==null||n===''||isNaN(parseFloat(n))) return null;
+  n=parseFloat(n);
+  if(n<=0) return null;
+  if(n>=1e12) return '$'+(n/1e12).toFixed(2)+'T';
+  if(n>=1e9)  return '$'+(n/1e9).toFixed(1)+'B';
+  if(n>=1e6)  return '$'+(n/1e6).toFixed(1)+'M';
+  return '$'+n.toFixed(0);
+}
+function fmtNewsAge(dt) {
+  try {
+    const diff=Math.floor((new Date()-new Date(dt))/3600000);
+    if(diff<1) return 'hace <1h';
+    if(diff<24) return `hace ${diff}h`;
+    return `hace ${Math.floor(diff/24)}d`;
+  } catch(e){ return ''; }
+}
+
 // ============================================
 // SCANNER
 // ============================================
@@ -1691,8 +1794,15 @@ async function runScanner(){
     // Pre-fetch earnings warnings for all selected tickers
     sp('Verificando earnings próximos...');
     const tdKey = localStorage.getItem(K_TDKEY) || '';
-    const earningsMap = await fetchEarningsWarnings(selected, tdKey);
-    const econEvents  = await fetchEconomicEvents(tdKey);
+    const earningsMap    = await fetchEarningsWarnings(selected, tdKey);
+    const econEvents     = await fetchEconomicEvents(tdKey);
+    sp('Cargando fundamentales...');
+    let fundamentalsMap = {};
+    try {
+      fundamentalsMap = await fetchFundamentals(selected.map(t=>t.toUpperCase()), tdKey);
+    } catch(e) {
+      dbg.push('Fundamentales: error al cargar (' + e.message + ')');
+    }
     if(Object.keys(earningsMap).length > 0)
       dbg.push(`Earnings próximos: ${Object.keys(earningsMap).join(', ')}`);
     if(econEvents.length > 0)
@@ -1727,7 +1837,7 @@ async function runScanner(){
               ? 'Fuera de horario US (09:30-16:00 ET) -- señal menos fiable'
               : null;
             dSigs.push({ticker: tickUpper, tf: 'daily', tfLabel: tfCfg.label, tfCfg,
-              earningsWarn, sessionWarn, ...res});
+              earningsWarn, sessionWarn, fundData: fundamentalsMap[tickUpper]||null, ...res});
           }
         } catch(e) {
           errs.push(`${tick} ${tfCfg.label}: ${e.message}`);
@@ -1873,8 +1983,27 @@ async function runScanner(){
           <div style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:5px;background:${s.mtfTrend==='BULL'?'oklch(0.65 0.20 165/0.2)':s.mtfTrend==='BEAR'?'oklch(0.65 0.26 25/0.2)':'var(--muted2)'};color:${s.mtfTrend==='BULL'?'var(--green-t)':s.mtfTrend==='BEAR'?'var(--red-t)':'var(--t4)'};">${s.mtfTrend==='BULL'?'↑ Alcista':s.mtfTrend==='BEAR'?'↓ Bajista':'-- Neutral'}</div>
           ${s.mtfTrend&&s.dir!=='ESPERAR'&&((s.dir==='COMPRAR'&&s.mtfTrend==='BULL')||(s.dir==='VENDER'&&s.mtfTrend==='BEAR'))?'<div style="font-size:9px;color:var(--green-t);">✓ Alineado</div>':''}
         </div>
-        ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''}
+        ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''} 
         ${s.sessionWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:9px;font-size:11px;color:var(--red-t);">🕐 ${s.sessionWarn}</div>`:''}
+
+        ${(()=>{
+          const f=s.fundData;
+          if(!f) return '';
+          const sector = (()=>{for(const g of ASSETS_DATA){if(g.items.includes(s.ticker))return g.g;}return null;})();
+          const sentColor = f.newsSentiment==='Bullish'?'var(--green-t)':f.newsSentiment==='Bearish'?'var(--red-t)':'var(--amber-t)';
+          const rows = [];
+          if(f.pe)        rows.push(`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid oklch(1 0 0/0.05);"><span style="font-size:10px;color:var(--t4);">P/E Ratio</span><span style="font-size:10px;font-weight:700;color:var(--t1);">${f.pe}x</span></div>`);
+          if(f.eps)       rows.push(`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid oklch(1 0 0/0.05);"><span style="font-size:10px;color:var(--t4);">EPS</span><span style="font-size:10px;font-weight:700;color:${parseFloat(f.eps)>=0?'var(--green-t)':'var(--red-t)'};">${parseFloat(f.eps)>=0?'+':''}${f.eps}</span></div>`);
+          if(f.mktcap)    rows.push(`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid oklch(1 0 0/0.05);"><span style="font-size:10px;color:var(--t4);">Market Cap</span><span style="font-size:10px;font-weight:700;color:var(--t1);">${f.mktcap}</span></div>`);
+          if(f.revenue)   rows.push(`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid oklch(1 0 0/0.05);"><span style="font-size:10px;color:var(--t4);">Revenue</span><span style="font-size:10px;font-weight:700;color:var(--t1);">${f.revenue}${f.revGrowth?` <span style="color:${parseFloat(f.revGrowth)>=0?'var(--green-t)':'var(--red-t)'};">(${parseFloat(f.revGrowth)>=0?'+':''}${f.revGrowth})</span>`:''}</span></div>`);
+          if(sector)      rows.push(`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid oklch(1 0 0/0.05);"><span style="font-size:10px;color:var(--t4);">Sector</span><span style="font-size:10px;font-weight:700;color:var(--amber-t);">${sector}</span></div>`);
+          if(f.newsTitle) rows.push(`<div style="padding:5px 0;"><div style="font-size:9px;color:var(--t4);margin-bottom:3px;">Ultima noticia <span style="color:var(--t3);">${f.newsAgo||''}</span>${f.newsSentiment?` <span style="color:${sentColor};">${f.newsSentiment}</span>`:''}</div><div style="font-size:10px;color:var(--t1);line-height:1.4;">${f.newsUrl?`<a href="${f.newsUrl}" target="_blank" style="color:inherit;text-decoration:none;">${f.newsTitle}</a>`:f.newsTitle}</div></div>`);
+          if(!rows.length) return '';
+          return `<div style="margin:0 16px 10px;padding:10px 12px;background:oklch(0.14 0.015 260/0.6);border:1px solid oklch(1 0 0/0.08);border-radius:9px;">
+            <div style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--t4);margin-bottom:6px;">📊 Fundamentales</div>
+            ${rows.join('')}
+          </div>`;
+        })()}
 
         ${levelsHtml}
         ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'${s.tf}')">✨ ${t('sig_import')}</button></div>`:''}
@@ -2185,6 +2314,26 @@ Summarize findings in 3-4 sentences focused on what matters for a short-term tra
     const mc2 = macd(cl);
     const bb2 = bbands(cl);
     const n2   = cl.length - 1;
+
+    // -- Fetch fundamental snapshot for AI prompt ------
+    let fundSnap = null;
+    if(tdKey && !FX_SET.has(ticker.toUpperCase())) {
+      try {
+        const fsJson = await (await fetch(`https://api.twelvedata.com/statistics?symbol=${ticker}&apikey=${tdKey}`)).json();
+        if(fsJson && fsJson.status !== 'error') {
+          const vs = fsJson.valuations_metrics||{};
+          const fs2 = (fsJson.financials?.income_statement)||{};
+          const bs2 = fsJson.balance_sheet||{};
+          fundSnap = {
+            pe:        vs.trailing_pe!=null ? parseFloat(vs.trailing_pe).toFixed(1) : null,
+            eps:       vs.trailing_eps!=null ? parseFloat(vs.trailing_eps).toFixed(2) : null,
+            mktcap:    bs2.market_capitalization!=null ? fmtCap(bs2.market_capitalization) : null,
+            revenue:   fs2.revenue!=null ? fmtCap(fs2.revenue) : null,
+            revGrowth: fs2.revenue_growth!=null ? (parseFloat(fs2.revenue_growth)*100).toFixed(1)+'%' : null,
+          };
+        }
+      } catch(e) { /* fundamentals optional */ }
+    }
     const macdHistVal  = mc2.hist[n2]?.toFixed(4) ?? '0';
     const macdDir      = (mc2.hist[n2]??0) > 0 ? 'POSITIVO (momentum alcista)' : 'NEGATIVO (momentum bajista)';
     const bbPctBVal    = bb2.pctB[n2] != null ? (bb2.pctB[n2]*100).toFixed(0)+'%' : '50%';
@@ -2243,6 +2392,12 @@ ${ctx2?'CONTEXTO ADICIONAL DEL TRADER: '+ctx2:''}
 ==== FUNDAMENTALES Y NOTICIAS ====
 ${newsContext||'Sin noticias recientes significativas encontradas.'}
 ${newsAlert?'⚠️ ALERTA FUNDAMENTAL: '+newsAlert:''}
+${fundSnap&&(fundSnap.pe||fundSnap.eps||fundSnap.mktcap)?`
+SNAPSHOT FUNDAMENTAL:
+${fundSnap.pe?'P/E Ratio: '+fundSnap.pe+'x':''}${fundSnap.eps?' | EPS: '+fundSnap.eps:''}
+${fundSnap.mktcap?'Market Cap: '+fundSnap.mktcap:''}
+${fundSnap.revenue?'Revenue: '+fundSnap.revenue+(fundSnap.revGrowth?' (Crecimiento YoY: '+fundSnap.revGrowth+')':''):''}
+`:''}
 
 ==== INSTRUCCIONES DE ANÁLISIS ====
 Como quant senior, analiza esta operación considerando:
