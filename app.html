@@ -913,9 +913,9 @@ class Chart {
 }
 </script>
 <script>
-// ════════════════════════════════════════════
+// ============================================
 // CONSTANTS
-// ════════════════════════════════════════════
+// ============================================
 const K_CFG='ht_cfg3', K_TR='ht_tr3', K_WK='ht_wk3', K_TDKEY='ht_tdkey', K_APIKEY='ht_apikey3';
 
 const PAGE_INFO={
@@ -988,9 +988,9 @@ const ASSETS_DATA=[
 const FX_SET=new Set(['XAUUSD','XAGUSD','EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD']);
 const FOREX_SET=new Set(['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD']);
 
-// ════════════════════════════════════════════
+// ============================================
 // TOAST & MODAL
-// ════════════════════════════════════════════
+// ============================================
 function toast(msg, type='info', dur=3500){
   const w=document.getElementById('toast-wrap');
   const icons={ok:'✅',err:'❌',info:'ℹ️',warn:'⚠️'};
@@ -1010,9 +1010,9 @@ function confirm2(title,sub){
 function modalResolve(v){document.getElementById('modal-bg').classList.remove('open');if(_mRes){_mRes(v);_mRes=null;}}
 document.getElementById('modal-bg').addEventListener('click',e=>{if(e.target===e.currentTarget)modalResolve(false);});
 
-// ════════════════════════════════════════════
+// ============================================
 // NAVIGATION
-// ════════════════════════════════════════════
+// ============================================
 function go(p,el){
   // Protect all pages except settings (needed for API key setup)
   const publicPages = ['settings'];
@@ -1034,9 +1034,9 @@ function go(p,el){
   if(p==='settings')loadCfgForm();
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // ASSET LIST
-// ════════════════════════════════════════════
+// ============================================
 function buildAssets(){
   const el=document.getElementById('aList');
   let html='';
@@ -1056,9 +1056,9 @@ function buildAssets(){
 }
 function selAll(v){document.querySelectorAll('#aList input[type=checkbox]').forEach(c=>c.checked=v);}
 
-// ════════════════════════════════════════════
+// ============================================
 // INDICATORS
-// ════════════════════════════════════════════
+// ============================================
 function ema(data,p){
   const k=2/(p+1),r=new Array(data.length).fill(null);
   let i=p-1;
@@ -1108,7 +1108,7 @@ function volma(v,p){
   return r;
 }
 
-// ── MACD (12/26/9) ────────────────────────────────
+// -- MACD (12/26/9) --------------------------------
 function macd(prices,fast=12,slow=26,sigP=9){
   const ef=ema(prices,fast), es=ema(prices,slow);
   const ml=prices.map((_,i)=>ef[i]!=null&&es[i]!=null?ef[i]-es[i]:null);
@@ -1122,7 +1122,7 @@ function macd(prices,fast=12,slow=26,sigP=9){
   return {macd:ml, signal:sl, hist:ml.map((v,i)=>v!=null&&sl[i]!=null?v-sl[i]:null)};
 }
 
-// ── Bollinger Bands (20,2) ────────────────────────
+// -- Bollinger Bands (20,2) ------------------------
 function bbands(prices,p=20,mult=2){
   const upper=[],mid=[],lower=[],pctB=[];
   for(let i=0;i<prices.length;i++){
@@ -1148,6 +1148,72 @@ function toWeekly(daily){
   return Object.values(w).sort((a,b)=>a.date.localeCompare(b.date));
 }
 
+// -- Resample candles to higher timeframe -------------------------
+// groupSize: how many candles to combine into one
+function resampleCandles(candles, groupSize) {
+  if(candles.length < groupSize * 3) return [];
+  const result = [];
+  for(let i = 0; i + groupSize <= candles.length; i += groupSize) {
+    const group = candles.slice(i, i + groupSize);
+    result.push({
+      date:   group[group.length-1].date,
+      ticker: group[0].ticker,
+      open:   group[0].open,
+      high:   Math.max(...group.map(c=>c.high)),
+      low:    Math.min(...group.map(c=>c.low)),
+      close:  group[group.length-1].close,
+      vol:    group.reduce((s,c)=>s+(c.vol||0),0),
+    });
+  }
+  return result;
+}
+
+// -- MTF: get higher timeframe trend from existing data ------------
+// Returns: 'BULL' | 'BEAR' | 'NEUTRAL'
+function getHigherTFTrend(candles, primaryInterval) {
+  // Map primary TF to grouping size for higher TF
+  const GROUP = {
+    '1min':  12,  // 12x1M = 12M (proxy for 15M trend)
+    '5min':  12,  // 12x5M = 1H
+    '15min': 4,   // 4x15M = 1H
+    '30min': 8,   // 8x30M = 4H
+    '1h':    4,   // 4x1H = 4H
+    '4h':    6,   // 6x4H = ~1D
+  };
+  const groupSize = GROUP[primaryInterval];
+  if(!groupSize) return 'NEUTRAL'; // daily/weekly have no higher TF
+
+  const higher = resampleCandles(candles, groupSize);
+  if(higher.length < 20) return 'NEUTRAL';
+
+  const cl = higher.map(c=>c.close);
+  const n  = cl.length - 1;
+
+  // Use EMA 9/21 on the higher TF
+  const e9h  = ema(cl, 9);
+  const e21h = ema(cl, 21);
+  const rsiH = rsi(cl, 14);
+
+  if(!e9h[n] || !e21h[n]) return 'NEUTRAL';
+
+  const aboveH  = e9h[n]  > e21h[n];
+  const rsiValH = rsiH[n] ?? 50;
+  const rsiOkH  = rsiValH >= 35 && rsiValH <= 70;
+
+  // Also check MACD on higher TF
+  const macdH = macd(cl);
+  const macdBullH = (macdH.hist[n]??0) > 0;
+  const macdBearH = (macdH.hist[n]??0) < 0;
+
+  // Higher TF is BULL if: EMA trend up + RSI healthy + MACD positive
+  const bullScore = (aboveH?1:0) + (rsiOkH?1:0) + (macdBullH?1:0);
+  const bearScore = (!aboveH?1:0) + (rsiOkH?1:0) + (macdBearH?1:0);
+
+  if(bullScore >= 2) return 'BULL';
+  if(bearScore >= 2) return 'BEAR';
+  return 'NEUTRAL';
+}
+
 function analyze(prices,spyMap,minF,tfCfg=null){
   if(prices.length<20)return null;
   const cl=prices.map(p=>p.close),hi=prices.map(p=>p.high),lo=prices.map(p=>p.low),vo=prices.map(p=>p.vol),dt=prices.map(p=>p.date);
@@ -1155,7 +1221,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const ADX_MIN=tfCfg?.adxMin||15, RSI_LO=tfCfg?.rsiLo||35, RSI_HI=tfCfg?.rsiHi||70;
   const e9=ema(cl,EF),e21=ema(cl,ES),rv=rsi(cl,RP),av=adx(hi,lo,cl,AP),vm=volma(vo,20);
 
-  // ── Additional professional indicators ────────────
+  // -- Additional professional indicators ------------
   const mc = macd(cl, 12, 26, 9);
   const bb = bbands(cl, 20, 2);
 
@@ -1171,25 +1237,25 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const above=e9[n]>e21[n];
   const rn=rv[n]??50, an=av[n]??0, vn=vo[n], vm20=vm[n]??0;
 
-  // ── MACD confirmation ─────────────────────────────
+  // -- MACD confirmation -----------------------------
   const macdHist     = mc.hist[n]??0;
   const macdHistPrev = mc.hist[n-1]??0;
   const macdBull = macdHist > 0 && macdHist > macdHistPrev;  // histogram rising above zero
   const macdBear = macdHist < 0 && macdHist < macdHistPrev;  // histogram falling below zero
 
-  // ── Bollinger Band position ───────────────────────
+  // -- Bollinger Band position -----------------------
   const pctB   = bb.pctB[n]??0.5;        // 0=lower band, 1=upper band
   const bbBull = pctB > 0.5 && pctB < 0.85; // price in upper half, not overbought
   const bbBear = pctB < 0.5 && pctB > 0.15; // price in lower half, not oversold
 
-  // ── Market structure: higher highs / lower lows ───
+  // -- Market structure: higher highs / lower lows ---
   const lookMS = Math.min(10, n-1);
   const prevHi = Math.max(...hi.slice(n-lookMS, n));
   const prevLo = Math.min(...lo.slice(n-lookMS, n));
   const structureBull = cl[n] > prevHi * 0.998; // breaking above recent highs
   const structureBear = cl[n] < prevLo * 1.002;  // breaking below recent lows
 
-  // ── Session filter: US market hours only for intraday ──
+  // -- Session filter: US market hours only for intraday --
   const isIntraday = ['1min','5min','15min','30min','1h'].includes(tfCfg?.interval);
   let sessionOk = true;
   if(isIntraday){
@@ -1203,7 +1269,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
     }
   }
 
-  // ── 5 core filters (same as before) ──────────────
+  // -- 5 core filters (same as before) --------------
   const f1=cup||cdn;
   const f2b=rn>=RSI_LO&&rn<=RSI_HI, f2s=rn>=(RSI_LO-5)&&rn<=(RSI_HI-5);
   const f3=an>ADX_MIN;
@@ -1211,30 +1277,39 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const f5=vm20>0?vn>=vm20*0.7:true;
   const ok=[f1,f2b||f2s,f3,f4,f5].filter(Boolean).length;
 
-  // ── Direction with MACD + BB + Structure confirmation ──
+  // -- Higher TF trend (MTF confirmation) --------------
+  const mtfTrend = getHigherTFTrend(prices, interval);
+  // MTF alignment: signal direction must not oppose higher TF trend
+  // NEUTRAL = allow any direction, BULL = only buys, BEAR = only sells
+  const mtfAligned = (dir2) =>
+    mtfTrend === 'NEUTRAL' ||
+    (dir2 === 'COMPRAR' && mtfTrend === 'BULL') ||
+    (dir2 === 'VENDER'  && mtfTrend === 'BEAR');
+
+  // -- Direction with MACD + BB + Structure + MTF confirmation --
   let dir='ESPERAR';
   if(ok>=Math.min(minF,3) && sessionOk){
     if(above && f2b){
-      // Strong buy: need at least 1 extra confirmation
       const extraConf = (macdBull?1:0) + (bbBull?1:0) + (structureBull?1:0);
-      dir = extraConf >= 1 ? 'COMPRAR' : 'ESPERAR';
+      // Need: 1 extra confirmation AND MTF not opposing
+      dir = (extraConf >= 1 && mtfAligned('COMPRAR')) ? 'COMPRAR' : 'ESPERAR';
     } else if(!above && f2s){
       const extraConf = (macdBear?1:0) + (bbBear?1:0) + (structureBear?1:0);
-      dir = extraConf >= 1 ? 'VENDER' : 'ESPERAR';
+      dir = (extraConf >= 1 && mtfAligned('VENDER')) ? 'VENDER' : 'ESPERAR';
     }
   }
 
   const lp=cl[n],pp=cl[n-1]||lp,dec=lp<10?4:2;
 
-  // ══════════════════════════════════════════════════
+  // ==================================================
   // PROFESSIONAL LEVELS ENGINE v4
   // Simple, correct, proportional to timeframe
   // SL = ATR * multiplier (never fixed %)
   // TP always = 2x SL distance (guaranteed 2:1 R/R)
-  // ══════════════════════════════════════════════════
+  // ==================================================
   const interval = tfCfg?.interval || '1day';
 
-  // ── Step 1: ATR — candle size for THIS timeframe ──
+  // -- Step 1: ATR -- candle size for THIS timeframe --
   // Use only the most recent candles to get current volatility
   const ATR_PERIODS = {'1min':5,'5min':5,'15min':7,'30min':7,'1h':10,'4h':10,'1day':14,'1week':14};
   const atrPeriod = ATR_PERIODS[interval] || 14;
@@ -1248,7 +1323,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   }
   const atr = atrSum / atrPeriod;
 
-  // ── Step 2: SL distance = ATR * multiplier ────────
+  // -- Step 2: SL distance = ATR * multiplier --------
   // This is the key fix: SL is proportional to candle size
   // 1M: 1.2x ATR, 5M: 1.5x ATR, ..., 1W: 3x ATR
   const SL_MULT = {'1min':1.2,'5min':1.5,'15min':1.8,'30min':2.0,'1h':2.2,'4h':2.5,'1day':2.8,'1week':3.0};
@@ -1260,7 +1335,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const maxSlDist = lp * (MAX_SL[interval] || 0.06);
   const finalSlDist = Math.min(slDistance, maxSlDist);
 
-  // ── Step 3: VWAP (tight session window) ──────────
+  // -- Step 3: VWAP (tight session window) ----------
   const VWAP_LB = {'1min':20,'5min':20,'15min':16,'30min':14,'1h':12,'4h':10,'1day':20,'1week':12};
   const vwapLb = VWAP_LB[interval] || 20;
   let vwapNum=0, vwapDen=0;
@@ -1272,7 +1347,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   }
   const vwap = vwapDen > 0 ? vwapNum / vwapDen : lp;
 
-  // ── Step 4: Volume Profile POC (tight window) ────
+  // -- Step 4: Volume Profile POC (tight window) ----
   const VOL_LB = {'1min':20,'5min':20,'15min':16,'30min':14,'1h':12,'4h':10,'1day':20,'1week':12};
   const volLb = VOL_LB[interval] || 20;
   const vBuckets = 20;
@@ -1287,13 +1362,13 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const pocBucket = vProf.indexOf(Math.max(...vProf));
   const poc = vMin + (pocBucket + 0.5) * bSize;
 
-  // ── Step 5: Support/Resistance (tight window) ────
+  // -- Step 5: Support/Resistance (tight window) ----
   const SR_LB = {'1min':10,'5min':12,'15min':14,'30min':16,'1h':18,'4h':20,'1day':20,'1week':20};
   const srLb = SR_LB[interval] || 20;
   const support    = Math.min(...lo.slice(Math.max(0, n-srLb), n+1));
   const resistance = Math.max(...hi.slice(Math.max(0, n-srLb), n+1));
 
-  // ── Step 6: Build levels ──────────────────────────
+  // -- Step 6: Build levels --------------------------
   let entryLow, entryHigh, sl, tp, tp2;
 
   if(dir === 'COMPRAR'){
@@ -1340,6 +1415,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
 
   return{
     dir,ok,
+    mtfTrend,
     fd:{ema:{ok:f1,v:cup?`↑Cruce EMA${EF}/${ES}`:cdn?`↓Cruce EMA${EF}/${ES}`:above?`EMA${EF}>EMA${ES}`:`EMA${EF}<EMA${ES}`},
         rsi:{ok:f2b||f2s,v:rn.toFixed(1)},adx:{ok:f3,v:an.toFixed(1)},
         spy:{ok:f4,v:f4?'OK':'Bajista'},vol:{ok:f5,v:f5?'↑Alto':'↓Bajo'}},
@@ -1368,9 +1444,9 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   };
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // ALPHA VANTAGE FETCH
-// ════════════════════════════════════════════
+// ============================================
 async function fetchAV(ticker, days, interval='1day', outsize=0, retries=2) {
   try {
     return await _fetchAVonce(ticker, days, interval, outsize);
@@ -1384,7 +1460,7 @@ async function fetchAV(ticker, days, interval='1day', outsize=0, retries=2) {
 }
 
 // Fetch multiple tickers at once using Twelvedata batch endpoint
-// 1 API credit for all tickers combined — much more efficient
+// 1 API credit for all tickers combined -- much more efficient
 async function fetchBatch(tickers, days) {
   const key = localStorage.getItem(K_TDKEY) || '';
   if (!key) throw new Error('Sin clave Twelvedata');
@@ -1460,7 +1536,7 @@ async function fetchBatch(tickers, days) {
 
 async function _fetchAVonce(ticker, days, interval='1day', outsize=0) {
   const key = localStorage.getItem(K_TDKEY) || '';
-  if (!key) throw new Error('Sin clave Twelvedata — ve a Configuración y añádela');
+  if (!key) throw new Error('Sin clave Twelvedata -- ve a Configuración y añádela');
   const upper = ticker.toUpperCase();
   const TD_FX  = new Set(['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD']);
   const TD_MAP = { XAUUSD: 'XAU/USD', XAGUSD: 'XAG/USD' };
@@ -1477,7 +1553,7 @@ async function _fetchAVonce(ticker, days, interval='1day', outsize=0) {
   const json = await r.json();
   if (json.status === 'error') throw new Error('Twelvedata: ' + (json.message || json.code || 'error'));
   if (!json.values || !json.values.length) throw new Error('Sin datos para ' + ticker);
-  // For intraday, don't filter by date cutoff — just use all returned candles
+  // For intraday, don't filter by date cutoff -- just use all returned candles
   const isFx = FX_SET.has(upper);
   const isIntraday2 = ['1min','5min','15min','30min','1h','4h'].includes(interval);
   const cutoff = isIntraday2 ? null : new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
@@ -1497,10 +1573,10 @@ async function _fetchAVonce(ticker, days, interval='1day', outsize=0) {
 }
 
 
-// ════════════════════════════════════════════
+// ============================================
 // EARNINGS & ECONOMIC CALENDAR
 // Twelvedata free endpoints
-// ════════════════════════════════════════════
+// ============================================
 async function fetchEarningsWarnings(tickers, tdKey) {
   // Check which tickers have earnings in next 7 days
   const warnings = {};
@@ -1519,7 +1595,7 @@ async function fetchEarningsWarnings(tickers, tdKey) {
       if(eDate >= today && eDate <= in7){
         const days = Math.ceil((eDate-today)/86400000);
         warnings[e.symbol.toUpperCase()] =
-          `Earnings en ${days} día${days>1?'s':''} (${e.date}) — ${e.time==='bmo'?'Pre-market':'After-hours'}. Alto riesgo.`;
+          `Earnings en ${days} día${days>1?'s':''} (${e.date}) -- ${e.time==='bmo'?'Pre-market':'After-hours'}. Alto riesgo.`;
       }
     });
   } catch(e) { /* silent fail */ }
@@ -1542,13 +1618,13 @@ async function fetchEconomicEvents(tdKey) {
       .map(ev => `${ev.event||ev.name} (${ev.date||ev.time})`);
   } catch(e) { return []; }
 }
-// ════════════════════════════════════════════
+// ============================================
 // SCANNER
-// ════════════════════════════════════════════
+// ============================================
 async function runScanner(){
   // Block if not logged in
   if(!checkSession()){
-    toast('🔒 Acceso requerido — introduce tu código de acceso','err');
+    toast('🔒 Acceso requerido -- introduce tu código de acceso','err');
     document.getElementById('loginScreen').style.display='flex';
     return;
   }
@@ -1566,18 +1642,18 @@ async function runScanner(){
   const days=+document.getElementById('scanDays').value;
 
   // Timeframe config: interval for API, display info for cards
-  // TF config — each has its own indicator params for accuracy
+  // TF config -- each has its own indicator params for accuracy
   // Intraday: EMA 5/13, RSI 8, ADX 10 (faster, more responsive)
   // Swing:    EMA 9/21, RSI 14, ADX 14 (classic, less noise)
   const TF_MAP = {
-    '1min': {interval:'1min',  label:'1M',      hold:'5–30 min',     entry:'Inmediato',          review:'Cada minuto',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:30, rsiHi:70, outsize:500},
-    '5min': {interval:'5min',  label:'5M',      hold:'30min–2h',     entry:'Inmediato',          review:'Cada 5 min',   emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:35, rsiHi:68, outsize:500},
-    '15min':{interval:'15min', label:'15M',     hold:'1–4 horas',    entry:'Próxima vela 15M',   review:'Cada 15 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
-    '30min':{interval:'30min', label:'30M',     hold:'2–6 horas',    entry:'Próxima vela 30M',   review:'Cada 30 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
-    '1h':   {interval:'1h',    label:'1H',      hold:'2–8 horas',    entry:'En las próximas 2h', review:'Cada hora',    emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
-    '4h':   {interval:'4h',    label:'4H',      hold:'1–3 días',     entry:'Próxima vela 4H',    review:'Cada 4h',      emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
-    'daily':{interval:'1day',  label:'Diario',  hold:'3–15 días',    entry:'Apertura mañana',    review:'Cada día',     emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:0},
-    'weekly':{interval:'1week',label:'Semanal', hold:'3–8 semanas',  entry:'Lunes apertura',     review:'Cada semana',  emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:0},
+    '1min': {interval:'1min',  label:'1M',      hold:'5-30 min',     entry:'Inmediato',          review:'Cada minuto',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:30, rsiHi:70, outsize:500},
+    '5min': {interval:'5min',  label:'5M',      hold:'30min-2h',     entry:'Inmediato',          review:'Cada 5 min',   emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:35, rsiHi:68, outsize:500},
+    '15min':{interval:'15min', label:'15M',     hold:'1-4 horas',    entry:'Próxima vela 15M',   review:'Cada 15 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
+    '30min':{interval:'30min', label:'30M',     hold:'2-6 horas',    entry:'Próxima vela 30M',   review:'Cada 30 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
+    '1h':   {interval:'1h',    label:'1H',      hold:'2-8 horas',    entry:'En las próximas 2h', review:'Cada hora',    emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
+    '4h':   {interval:'4h',    label:'4H',      hold:'1-3 días',     entry:'Próxima vela 4H',    review:'Cada 4h',      emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
+    'daily':{interval:'1day',  label:'Diario',  hold:'3-15 días',    entry:'Apertura mañana',    review:'Cada día',     emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:0},
+    'weekly':{interval:'1week',label:'Semanal', hold:'3-8 semanas',  entry:'Lunes apertura',     review:'Cada semana',  emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:0},
   };
   const activeTFs = tf === 'both'
     ? [TF_MAP.daily, TF_MAP.weekly]
@@ -1632,7 +1708,7 @@ async function runScanner(){
         const estSecs = remaining * DELAY_MS / 1000;
         const estMins = Math.floor(estSecs / 60);
         const estSecR = Math.round(estSecs % 60);
-        sp(`[${tfCfg.label}] (${i+1}/${selected.length}) ${tick} — quedan ~${estMins > 0 ? estMins+'m ' : ''}${estSecR}s`);
+        sp(`[${tfCfg.label}] (${i+1}/${selected.length}) ${tick} -- quedan ~${estMins > 0 ? estMins+'m ' : ''}${estSecR}s`);
         const pb = document.getElementById('sPBar');
         const totalItems = activeTFs.length * selected.length;
         const doneItems = activeTFs.indexOf(tfCfg) * selected.length + i + 1;
@@ -1648,7 +1724,7 @@ async function runScanner(){
             const earningsWarn = earningsMap[tickUpper] || null;
             // Session warning for intraday outside US hours
             const sessionWarn = (res.sessionOk===false)
-              ? 'Fuera de horario US (09:30-16:00 ET) — señal menos fiable'
+              ? 'Fuera de horario US (09:30-16:00 ET) -- señal menos fiable'
               : null;
             dSigs.push({ticker: tickUpper, tf: 'daily', tfLabel: tfCfg.label, tfCfg,
               earningsWarn, sessionWarn, ...res});
@@ -1684,7 +1760,7 @@ async function runScanner(){
     const cards=sorted.map(s=>{
       const cc=s.dir==='COMPRAR'?'buy-s':s.dir==='VENDER'?'sell-s':'';
       const chp=s.dir==='COMPRAR'?'c-buy':s.dir==='VENDER'?'c-sell':'c-wait';
-      const di=s.dir==='COMPRAR'?'↑':s.dir==='VENDER'?'↓':'–';
+      const di=s.dir==='COMPRAR'?'↑':s.dir==='VENDER'?'↓':'-';
       const dirLabel=s.dir==='COMPRAR'?t('dir_buy'):s.dir==='VENDER'?t('dir_sell'):t('dir_wait');
       const fd=s.fd;
       const logo=LOGOS[s.ticker];
@@ -1702,10 +1778,10 @@ async function runScanner(){
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
             <div style="background:oklch(0.65 0.20 165/0.1);border:1px solid oklch(0.65 0.20 165/0.25);border-radius:8px;padding:8px;">
               <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_zone')}</div>
-              <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--primary);">$${lv.entryLow} – $${lv.entryHigh}</div>
+              <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--primary);">$${lv.entryLow} - $${lv.entryHigh}</div>
             </div>
             <div style="background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:8px;padding:8px;">
-              <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_sl')} −${lv.slPct}%</div>
+              <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_sl')} -${lv.slPct}%</div>
               <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--red-t);">$${lv.sl}</div>
             </div>
             <div style="background:oklch(0.72 0.22 155/0.1);border:1px solid oklch(0.72 0.22 155/0.25);border-radius:8px;padding:8px;">
@@ -1757,7 +1833,7 @@ async function runScanner(){
         <div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.20 165/0.07);border:1px solid oklch(0.65 0.20 165/0.18);border-radius:9px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;">
           <div>
             <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_hold')}</div>
-            <div style="font-size:11px;font-weight:700;color:var(--primary);">${s.tfCfg?.hold||(s.tf==='daily'?'3–15 días':'3–8 semanas')}</div>
+            <div style="font-size:11px;font-weight:700;color:var(--primary);">${s.tfCfg?.hold||(s.tf==='daily'?'3-15 días':'3-8 semanas')}</div>
           </div>
           <div>
             <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_entry')}</div>
@@ -1785,12 +1861,17 @@ async function runScanner(){
           </div>
           <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
             <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">BB %B</div>
-            <div style="font-size:10px;font-weight:700;color:${parseFloat(s.bbPctB)>70?'var(--amber-t)':parseFloat(s.bbPctB)<30?'var(--amber-t)':'var(--green-t)'};">${s.bbPctB??'—'}%</div>
+            <div style="font-size:10px;font-weight:700;color:${parseFloat(s.bbPctB)>70?'var(--amber-t)':parseFloat(s.bbPctB)<30?'var(--amber-t)':'var(--green-t)'};">${s.bbPctB??'--'}%</div>
           </div>
           <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
             <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">Confirmación</div>
             <div style="font-size:10px;font-weight:700;color:${(s.extraScore||0)>=2?'var(--green-t)':(s.extraScore||0)===1?'var(--amber-t)':'var(--red-t)'};">${s.extraScore||0}/3 ✓</div>
           </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 16px 10px;">
+          <div style="font-size:10px;color:var(--t4);">HTF:</div>
+          <div style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:5px;background:${s.mtfTrend==='BULL'?'oklch(0.65 0.20 165/0.2)':s.mtfTrend==='BEAR'?'oklch(0.65 0.26 25/0.2)':'var(--muted2)'};color:${s.mtfTrend==='BULL'?'var(--green-t)':s.mtfTrend==='BEAR'?'var(--red-t)':'var(--t4)'};">${s.mtfTrend==='BULL'?'↑ Alcista':s.mtfTrend==='BEAR'?'↓ Bajista':'-- Neutral'}</div>
+          ${s.mtfTrend&&s.dir!=='ESPERAR'&&((s.dir==='COMPRAR'&&s.mtfTrend==='BULL')||(s.dir==='VENDER'&&s.mtfTrend==='BEAR'))?'<div style="font-size:9px;color:var(--green-t);">✓ Alineado</div>':''}
         </div>
         ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''}
         ${s.sessionWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:9px;font-size:11px;color:var(--red-t);">🕐 ${s.sessionWarn}</div>`:''}
@@ -1801,8 +1882,76 @@ async function runScanner(){
     }).join('');
 
     // Economic events banner
+    // -- SECTOR CORRELATION ANALYSIS ----------------------
+    // Build a map: sector -> list of buy/sell signals
+    const SECTOR_MAP = {};
+    ASSETS_DATA.forEach(sector => {
+      sector.items.forEach(ticker => {
+        SECTOR_MAP[ticker] = sector.g;
+      });
+    });
+
+    // Count signals per sector (only directional signals)
+    const sectorBuys  = {};
+    const sectorSells = {};
+    const sectorTickers = {};
+
+    dSigs.forEach(s => {
+      if(s.dir === 'ESPERAR') return;
+      const sector = SECTOR_MAP[s.ticker] || 'Otro';
+      if(s.dir === 'COMPRAR') {
+        sectorBuys[sector]    = (sectorBuys[sector]    || 0) + 1;
+        sectorTickers[sector] = sectorTickers[sector]  || [];
+        if(!sectorTickers[sector].includes(s.ticker)) sectorTickers[sector].push(s.ticker);
+      } else if(s.dir === 'VENDER') {
+        sectorSells[sector]   = (sectorSells[sector]   || 0) + 1;
+      }
+    });
+
+    // Build correlation warnings
+    const correlationWarnings = [];
+
+    // Warning 1: 3+ buys in same sector = concentrated risk
+    Object.entries(sectorBuys).forEach(([sector, count]) => {
+      if(count >= 3) {
+        const tks = (sectorTickers[sector] || []).slice(0,4).join(', ');
+        correlationWarnings.push(
+          `⚠️ <strong>Riesgo concentrado en ${sector}:</strong> ${count} señales de compra (${tks}). ` +
+          `Estos activos están altamente correlacionados -- una caída del sector afectará a todas las posiciones simultáneamente. Considera operar máximo 1-2.`
+        );
+      }
+    });
+
+    // Warning 2: Mixed signals in same sector (buy + sell same sector)
+    Object.entries(sectorSells).forEach(([sector, sellCount]) => {
+      if(sectorBuys[sector] && sectorBuys[sector] >= 1 && sellCount >= 1) {
+        correlationWarnings.push(
+          `🔄 <strong>Señales contradictorias en ${sector}:</strong> ` +
+          `${sectorBuys[sector]} compra(s) y ${sellCount} venta(s) en el mismo sector. ` +
+          `El sector no tiene dirección clara -- esperar confirmación.`
+        );
+      }
+    });
+
+    // Warning 3: Total portfolio concentration
+    const totalDirectional = dSigs.filter(s => s.dir !== 'ESPERAR').length;
+    const topSector = Object.entries(sectorBuys).sort((a,b)=>b[1]-a[1])[0];
+    if(topSector && totalDirectional > 0 && (topSector[1] / totalDirectional) > 0.6) {
+      correlationWarnings.push(
+        `📊 <strong>Cartera desequilibrada:</strong> ${Math.round(topSector[1]/totalDirectional*100)}% de las señales están en ${topSector[0]}. ` +
+        `Una rotación sectorial podría invalidar todas las posiciones a la vez.`
+      );
+    }
+
+    const correlationBanner = correlationWarnings.length > 0
+      ? `<div style="margin-bottom:10px;padding:12px 14px;background:oklch(0.78 0.16 70/0.1);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:10px;">
+           <div style="font-size:12px;font-weight:700;color:var(--amber-t);margin-bottom:6px;">🔗 ANÁLISIS DE CORRELACIÓN</div>
+           ${correlationWarnings.map(w=>`<div style="font-size:11px;color:var(--t2);line-height:1.5;margin-bottom:4px;">${w}</div>`).join('')}
+         </div>`
+      : '';
+
     const econBanner = econEvents.length>0
-      ? `<div class="ban ban-w" style="margin-bottom:8px;">📅 <strong>Eventos macro esta semana:</strong> ${econEvents.join(' · ')}</div>`
+      ? `<div class="ban ban-w" style="margin-bottom:8px;">📅 <strong>Eventos macro esta semana:</strong> ${econEvents.join(' . ')}</div>`
       : '';
     const noBuy=all.length>0&&buys.length===0&&sells.length===0
       ?`<div class="ban ban-w" style="margin-bottom:10px;">${t('no_signal')} Se muestran todos los activos con sus métricas.</div>`:'';
@@ -1817,12 +1966,12 @@ async function runScanner(){
         <div class="tile" style="background:var(--amber-bg);border-radius:13px;padding:12px;"><div class="tl" style="font-size:8px;margin-bottom:5px;color:var(--t4);">${t('tile_wait')}</div><div class="tv" style="font-size:20px;color:var(--amber-t);">${waits.length}</div></div>
         <div class="tile" style="background:var(--muted2);border-radius:13px;padding:12px;"><div class="tl" style="font-size:8px;margin-bottom:5px;color:var(--t4);">${t('tile_errors')}</div><div class="tv" style="font-size:20px;color:${errs.length?'var(--red-t)':'var(--t4)'};">${errs.length}</div></div>
       </div>
-      ${econBanner}${noBuy}
-      ${sorted.length===0?`<div class="empty"><div class="empty-icon">📭</div><div style="font-weight:700;color:var(--t2);">${t('no_results')} — abre el log abajo</div></div>`:`<div class="sig-grid">${cards}</div>`}
+      ${correlationBanner}${econBanner}${noBuy}
+      ${sorted.length===0?`<div class="empty"><div class="empty-icon">📭</div><div style="font-weight:700;color:var(--t2);">${t('no_results')} -- abre el log abajo</div></div>`:`<div class="sig-grid">${cards}</div>`}
       ${errHtml}${dbgHtml}`;
 
     const b=buys.length,s2=sells.length,w=waits.length;
-    toast(`Listo — 🟢${b} comprar · 🔴${s2} vender · 🟡${w} esperar · ❌${errs.length} errores`,'ok');
+    toast(`Listo -- 🟢${b} comprar . 🔴${s2} vender . 🟡${w} esperar . ❌${errs.length} errores`,'ok');
     // update avInfo
     const ai=document.getElementById('avInfo');
     if(ai)ai.textContent=`${all.length} analizados`;
@@ -1846,12 +1995,12 @@ function importSig(ticker,dir,filters,tf){
   toast(`${ticker} importado al jornal`,'ok');
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // BACKTEST
-// ════════════════════════════════════════════
+// ============================================
 async function runBacktest(){
   if(!checkSession()){
-    toast('🔒 Acceso requerido — introduce tu código de acceso','err');
+    toast('🔒 Acceso requerido -- introduce tu código de acceso','err');
     document.getElementById('loginScreen').style.display='flex';
     return;
   }
@@ -1907,7 +2056,7 @@ async function runBacktest(){
         <div class="tile gc" style="padding:14px;border-radius:13px;"><div class="tl" style="font-size:8px;margin-bottom:6px;color:var(--t4);">Profit Factor</div><div class="tv" style="font-size:22px;">${pf}x</div></div>
       </div>
       <div class="g2 mb">
-        <div class="card gc gb"><div class="card-h"><div class="card-title">Equity Curve — ${tick}</div></div><div class="card-b"><div style="height:190px;"><canvas id="btC"></canvas></div></div></div>
+        <div class="card gc gb"><div class="card-h"><div class="card-title">Equity Curve -- ${tick}</div></div><div class="card-b"><div style="height:190px;"><canvas id="btC"></canvas></div></div></div>
         <div class="card"><div class="card-h"><div class="card-title">Últimas operaciones</div></div>
           <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Fecha</th><th>Dir.</th><th>Entrada</th><th>Salida</th><th>P&L</th></tr></thead>
           <tbody>${trades.slice(-12).reverse().map(t=>`<tr class="${t.won?'row-w':'row-l'}"><td style="font-size:11px;">${t.date}</td><td><span class="chip ${t.dir==='COMPRAR'?'c-buy':'c-sell'}">${t.dir}</span></td><td class="mono" style="font-size:11px;">$${t.entry.toFixed(2)}</td><td class="mono" style="font-size:11px;">$${t.exit.toFixed(2)}</td><td style="font-weight:700;font-family:DM Mono,monospace;color:${t.pnl>0?'var(--green-t)':'var(--red-t)'};">${t.pnl>0?'+':''}$${t.pnl.toFixed(0)}</td></tr>`).join('')}</tbody>
@@ -1916,14 +2065,14 @@ async function runBacktest(){
       </div>`;
     const ctx=document.getElementById('btC')?.getContext('2d');
     if(ctx){new Chart(ctx,{type:'line',data:{labels:equity.map((_,i)=>i),datasets:[{label:'Capital',data:equity,borderColor:'oklch(0.65 0.20 165)',backgroundColor:'oklch(0.65 0.20 165/0.08)',fill:true,tension:0.35,pointRadius:0,borderWidth:2.5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'oklch(1 0 0/0.05)'},ticks:{color:'oklch(0.55 0.01 260)',callback:v=>'$'+v.toFixed(0)}}}}})}
-    toast(`Backtest ${tick} — Win Rate: ${wr}% · P&L: ${pnlT>=0?'+':''}$${pnlT.toFixed(0)}`,'ok');
+    toast(`Backtest ${tick} -- Win Rate: ${wr}% . P&L: ${pnlT>=0?'+':''}$${pnlT.toFixed(0)}`,'ok');
   }catch(e){area.innerHTML=`<div class="ban ban-e">❌ ${e.message}</div>`;toast(e.message,'err');}
   finally{btn.disabled=false;btn.textContent='📊 Ejecutar backtest';}
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // ANALYSIS AI
-// ════════════════════════════════════════════
+// ============================================
 function togglePw(id){const el=document.getElementById(id);el.type=el.type==='password'?'text':'password';}
 function saveApiKey(){
   const k=document.getElementById('apiKey').value.trim();
@@ -1952,7 +2101,7 @@ async function testApiKey(){
 let curSig=null;
 async function genSignal(){
   if(!checkSession()){
-    toast('🔒 Acceso requerido — introduce tu código de acceso','err');
+    toast('🔒 Acceso requerido -- introduce tu código de acceso','err');
     document.getElementById('loginScreen').style.display='flex';
     return;
   }
@@ -2032,52 +2181,100 @@ Summarize findings in 3-4 sentences focused on what matters for a short-term tra
     // Step 3: Generate full analysis with all context
     setStatus(`🤖 Generando análisis completo con razonamiento humano...`);
 
-    const prompt=`Eres un trader profesional experto en mercados islámicos con 20 años de experiencia. Tu análisis combina técnica, fundamentales y razonamiento humano profundo.
+    // -- Calculate extra indicators for AI prompt --------
+    const mc2 = macd(cl);
+    const bb2 = bbands(cl);
+    const n2   = cl.length - 1;
+    const macdHistVal  = mc2.hist[n2]?.toFixed(4) ?? '0';
+    const macdDir      = (mc2.hist[n2]??0) > 0 ? 'POSITIVO (momentum alcista)' : 'NEGATIVO (momentum bajista)';
+    const bbPctBVal    = bb2.pctB[n2] != null ? (bb2.pctB[n2]*100).toFixed(0)+'%' : '50%';
+    const bbPos        = bb2.pctB[n2] != null
+      ? bb2.pctB[n2] > 0.8 ? 'SOBRECOMPRADO -- cerca de banda superior'
+      : bb2.pctB[n2] < 0.2 ? 'SOBREVENDIDO -- cerca de banda inferior'
+      : bb2.pctB[n2] > 0.5 ? 'Mitad superior -- momentum positivo'
+      : 'Mitad inferior -- momentum negativo'
+      : 'Central';
+    const mtfResult2   = (() => {
+      if(!useD || useD.length < 30) return 'No disponible';
+      const trend = getHigherTFTrend(useD.map(p=>({...p,ticker})), tf==='semanal'?'1week':'diario');
+      return trend==='BULL'?'ALCISTA ✓ -- tendencia superior confirma compra'
+           : trend==='BEAR'?'BAJISTA ✓ -- tendencia superior confirma venta'
+           : 'NEUTRAL -- tendencia superior sin dirección clara';
+    })();
+    const e50val = e50[n2]?.toFixed(4) ?? 'N/A';
+    const rsiInterpret = rv[n2] > 70 ? 'SOBRECOMPRADO -- precaución'
+                       : rv[n2] < 30 ? 'SOBREVENDIDO -- posible rebote'
+                       : rv[n2] > 55 ? 'Fuerza alcista'
+                       : rv[n2] < 45 ? 'Debilidad bajista'
+                       : 'Neutral';
 
-ACTIVO: ${ticker} (${companyName}) | Temporalidad: ${tf} | Fecha: ${today}
+    const prompt=`Eres un analista cuantitativo senior de un hedge fund especializado en mercados islámicos. Tienes acceso a datos técnicos avanzados y noticias en tiempo real. Tu análisis es preciso, directo y accionable.
 
-DATOS TÉCNICOS:
-- Precio actual: $${price.toFixed(4)}
-- EMA9: ${e9[n]?.toFixed(4)} | EMA21: ${e21[n]?.toFixed(4)} | EMA50: ${e50[n]?.toFixed(4)}
-- RSI(14): ${rv[n]?.toFixed(1)} | ADX(14): ${av3[n]?.toFixed(1)}
-- Volumen vs media20: ${vo[n]>=(vm[n]||0)*0.7?'ALTO ✓':'BAJO ✗'}
-- Cruce EMA: ${cup?'↑ ALCISTA ✓':cdn?'↓ BAJISTA ✓':'Sin cruce reciente'}
-- EMA9 ${e9[n]>e21[n]?'SOBRE':'BAJO'} EMA21 — tendencia ${e9[n]>e21[n]?'alcista':'bajista'}
-${ctx2?'- Contexto adicional: '+ctx2:''}
+ACTIVO: ${ticker} (${companyName})
+Temporalidad: ${tf} | Fecha y hora: ${today} ${new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}
+${FOREX_SET.has(ticker.toUpperCase())?'TIPO: FOREX -- Solo válido con cuenta islámica sin swap':'TIPO: EQUITY -- verificado halal'}
 
-FUNDAMENTALES Y NOTICIAS RECIENTES (buscadas ahora mismo):
-${newsContext||'No se encontraron noticias recientes significativas.'}
-${newsAlert?'ALERTA: '+newsAlert:''}
+==== ANÁLISIS TÉCNICO COMPLETO ====
+PRECIO: $${price.toFixed(4)}
+Cambio reciente: ${cl[n2]>cl[n2-1]?'+':'-'}${Math.abs(((cl[n2]-cl[n2-1])/cl[n2-1])*100).toFixed(2)}%
 
-${FOREX_SET.has(ticker.toUpperCase())?'⚠️ FOREX: Solo válido con cuenta islámica sin swap (sin interés overnight).':''}
+TENDENCIA (EMAs):
+- EMA${EF||9}: $${e9[n2]?.toFixed(4)} | EMA${ES||21}: $${e21[n2]?.toFixed(4)} | EMA50: $${e50val}
+- Posición: EMA rápida ${e9[n2]>e21[n2]?'SOBRE':'BAJO'} EMA lenta → tendencia ${e9[n2]>e21[n2]?'ALCISTA':'BAJISTA'}
+- Cruce reciente: ${cup?'↑ CRUCE ALCISTA (señal de entrada)':cdn?'↓ CRUCE BAJISTA (señal de entrada)':'Sin cruce -- tendencia continuada'}
 
-INSTRUCCIONES:
-Analiza como lo haría un trader humano experimentado. Considera:
-1. ¿Confirman los fundamentales la señal técnica, o la contradicen?
-2. ¿Hay eventos próximos (earnings, FOMC, noticias) que aumenten el riesgo?
-3. ¿El contexto de mercado (tendencia general, sector) apoya la entrada?
-4. ¿Qué haría un trader conservador vs uno más agresivo?
-5. ¿Cumple 100% con criterios halal?
+MOMENTUM:
+- RSI(${RP||14}): ${rv[n2]?.toFixed(1)} -- ${rsiInterpret}
+- MACD histograma: ${macdHistVal} → ${macdDir}
+- Bollinger Band %B: ${bbPctBVal} -- ${bbPos}
+- ADX(${AP||14}): ${av3[n2]?.toFixed(1)} ${av3[n2]>25?'-- TENDENCIA FUERTE ✓':'-- tendencia débil o lateral'}
+
+VOLUMEN: ${vo[n2]>=(vm[n2]||0)*0.7?'ALTO ✓ -- institucionales activos':'BAJO ✗ -- movimiento sin convicción'}
+
+TIMEFRAME SUPERIOR (confirmación):
+- Tendencia HTF: ${mtfResult2}
+
+NIVELES CLAVE:
+- Soporte inmediato: $${Math.min(...lo.slice(Math.max(0,n2-10),n2+1)).toFixed(4)}
+- Resistencia inmediata: $${Math.max(...hi.slice(Math.max(0,n2-10),n2+1)).toFixed(4)}
+
+${ctx2?'CONTEXTO ADICIONAL DEL TRADER: '+ctx2:''}
+
+==== FUNDAMENTALES Y NOTICIAS ====
+${newsContext||'Sin noticias recientes significativas encontradas.'}
+${newsAlert?'⚠️ ALERTA FUNDAMENTAL: '+newsAlert:''}
+
+==== INSTRUCCIONES DE ANÁLISIS ====
+Como quant senior, analiza esta operación considerando:
+
+1. CONFLUENCIA TÉCNICA: ¿Cuántos indicadores confirman la misma dirección? ¿MACD, RSI, EMA y HTF están alineados?
+2. CONTEXTO FUNDAMENTAL: ¿Las noticias recientes apoyan o contradicen la señal técnica?
+3. GESTIÓN DE RIESGO: Calcula SL y TP precisos basados en los niveles de soporte/resistencia reales, no en porcentajes fijos.
+4. TIMING: ¿Es este el momento óptimo de entrada o hay que esperar mejor precio/confirmación?
+5. HALAL: Verifica explícitamente que la operación cumple con Shariah (sin margin, sin short selling, sin swap para forex).
+
+IMPORTANTE: Si la señal técnica contradice el timeframe superior, recomienda ESPERAR. Si hay earnings en menos de 3 días, reduce la confianza al máximo 40%.
 
 Responde SOLO con JSON válido (sin markdown, sin texto extra):
 {
   "direccion":"COMPRAR|VENDER|ESPERAR",
   "confianza":75,
   "precio_ref":"${price.toFixed(4)}",
-  "target":"precio objetivo exacto",
-  "stop_loss":"precio stop exacto",
+  "target":"precio objetivo exacto basado en resistencia real",
+  "stop_loss":"precio stop exacto basado en soporte real",
   "filtros_ok":3,
-  "f_ema":{"estado":"PASA|FALLA","detalle":"explicación concisa"},
-  "f_rsi":{"estado":"PASA|FALLA","detalle":"valor y significado"},
-  "f_adx":{"estado":"PASA|FALLA","detalle":"fuerza tendencia"},
-  "f_spy":{"estado":"PASA|FALLA","detalle":"contexto mercado"},
-  "f_vol":{"estado":"PASA|FALLA","detalle":"análisis volumen"},
-  "tecnico":"2-3 frases con razonamiento técnico humano, no solo datos",
-  "fundamental":"2-3 frases sobre noticias recientes y su impacto real en el precio",
-  "catalistas":"1-2 frases sobre eventos próximos que pueden mover el precio",
-  "halal":"verificación explícita de cumplimiento halal para este activo y operación",
-  "riesgo":"2 frases sobre riesgos ESPECÍFICOS de esta operación ahora mismo",
-  "razonamiento":"1-2 frases de por qué un trader experto tomaría o NO esta operación hoy",
+  "mtf_confirmacion":"ALINEADO|OPUESTO|NEUTRAL",
+  "f_ema":{"estado":"PASA|FALLA","detalle":"explicación con valores exactos"},
+  "f_rsi":{"estado":"PASA|FALLA","detalle":"valor, zona y significado"},
+  "f_adx":{"estado":"PASA|FALLA","detalle":"fuerza y dirección de tendencia"},
+  "f_spy":{"estado":"PASA|FALLA","detalle":"contexto mercado general"},
+  "f_vol":{"estado":"PASA|FALLA","detalle":"análisis volumen e institucionales"},
+  "tecnico":"3 frases precisas: confluencia de indicadores, estructura del precio, nivel clave más importante",
+  "fundamental":"2-3 frases: impacto REAL de las noticias en el precio a corto plazo",
+  "catalistas":"Eventos próximos con fechas exactas que pueden mover el precio ±5%",
+  "halal":"Verificación detallada: tipo operación, instrumentos usados, cumplimiento shariah",
+  "riesgo":"2 riesgos ESPECÍFICOS con probabilidad estimada para esta operación HOY",
+  "razonamiento":"Decisión final: por qué SÍ o NO entrar AHORA con este setup específico",
   "hora":"${new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'})}"
 }`;
 
@@ -2126,7 +2323,7 @@ function renderSig(s){
           <div class="ap-ticker">${s.ticker}</div>
           <span class="chip c-grey">${s.tf==='diario'?'Diario':'Semanal'}</span>${importBtn}
         </div>
-        <div class="ap-sub">${ASSET_MAP[s.ticker]||s.ticker} · ${now.toLocaleDateString('es-ES',{day:'2-digit',month:'short'})} ${s.hora||''}</div>
+        <div class="ap-sub">${ASSET_MAP[s.ticker]||s.ticker} . ${now.toLocaleDateString('es-ES',{day:'2-digit',month:'short'})} ${s.hora||''}</div>
       </div>
       <div class="dir-badge ${dc}">${di} ${s.direccion}</div>
     </div>
@@ -2141,16 +2338,16 @@ function renderSig(s){
       ${fr('EMA 9/21',s.f_ema)}${fr('RSI 14',s.f_rsi)}${fr('ADX 14',s.f_adx)}${fr('SPY',s.f_spy)}${fr('Volumen',s.f_vol)}
     </div>
     <div class="ap-body">
-      <div><div class="abt">Análisis Técnico</div><div class="abtxt">${s.tecnico||'—'}</div></div>
-      <div><div class="abt">Fundamentales (noticias recientes)</div><div class="abtxt">${s.fundamental||'—'}</div></div>
-      <div><div class="abt">Catalizadores próximos</div><div class="abtxt" style="color:var(--amber-t);">${s.catalistas||'—'}</div></div>
-      <div><div class="abt">Cumplimiento Halal</div><div class="abtxt" style="color:var(--green-t);">${s.halal||'—'}</div></div>
-      <div><div class="abt">Riesgos específicos</div><div class="abtxt" style="color:var(--red-t);">${s.riesgo||'—'}</div></div>
-      <div><div class="abt">Razonamiento del trader</div><div class="abtxt" style="color:var(--primary);font-style:italic;">${s.razonamiento||'—'}</div></div>
+      <div><div class="abt">Análisis Técnico</div><div class="abtxt">${s.tecnico||'--'}</div></div>
+      <div><div class="abt">Fundamentales (noticias recientes)</div><div class="abtxt">${s.fundamental||'--'}</div></div>
+      <div><div class="abt">Catalizadores próximos</div><div class="abtxt" style="color:var(--amber-t);">${s.catalistas||'--'}</div></div>
+      <div><div class="abt">Cumplimiento Halal</div><div class="abtxt" style="color:var(--green-t);">${s.halal||'--'}</div></div>
+      <div><div class="abt">Riesgos específicos</div><div class="abtxt" style="color:var(--red-t);">${s.riesgo||'--'}</div></div>
+      <div><div class="abt">Razonamiento del trader</div><div class="abtxt" style="color:var(--primary);font-style:italic;">${s.razonamiento||'--'}</div></div>
     </div>
     ${s.newsAlert?`<div style="margin:0 24px 12px;padding:10px 14px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:10px;font-size:12px;color:var(--amber-t);">⚠️ ${s.newsAlert}</div>`:''}
     <div class="ap-foot">
-      <span style="font-size:11px;color:var(--t4);">Generado el ${now.toLocaleDateString('es-ES')} · Incluye búsqueda de noticias en tiempo real</span>
+      <span style="font-size:11px;color:var(--t4);">Generado el ${now.toLocaleDateString('es-ES')} . Incluye búsqueda de noticias en tiempo real</span>
       <span style="font-size:11px;color:var(--t4);">No es asesoramiento financiero</span>
     </div>`;
 }
@@ -2159,7 +2356,7 @@ function addHist(s){
   if(list.querySelector('.empty'))list.innerHTML='';
   const cc=s.direccion==='COMPRAR'?'c-buy':s.direccion==='VENDER'?'c-sell':'c-wait';
   const row=document.createElement('div');row.className='hist-row';row.onclick=()=>renderSig(s);
-  row.innerHTML=`<div><div class="mono" style="font-size:12.5px;font-weight:600;">${s.ticker} <span class="chip c-grey" style="font-size:7.5px;">${s.tf?.toUpperCase()}</span></div><div style="font-size:10px;color:var(--t4);margin-top:1px;">${s.hora||''} · ${s.filtros_ok||0}/5 · ${s.confianza}%</div></div><span class="chip ${cc}">${s.direccion}</span>`;
+  row.innerHTML=`<div><div class="mono" style="font-size:12.5px;font-weight:600;">${s.ticker} <span class="chip c-grey" style="font-size:7.5px;">${s.tf?.toUpperCase()}</span></div><div style="font-size:10px;color:var(--t4);margin-top:1px;">${s.hora||''} . ${s.filtros_ok||0}/5 . ${s.confianza}%</div></div><span class="chip ${cc}">${s.direccion}</span>`;
   list.insertBefore(row,list.firstChild);
   const cnt=document.getElementById('histCnt');if(cnt)cnt.textContent=parseInt(cnt.textContent||0)+1;
 }
@@ -2171,8 +2368,8 @@ async function sendTG(){
   const btn=document.getElementById('tgBtn'),st=document.getElementById('tgStatus');
   btn.disabled=true;btn.textContent='Enviando...';
   const icon=s.direccion==='COMPRAR'?'🟢':s.direccion==='VENDER'?'🔴':'🟡';
-  const fl=f=>f?`${f.estado==='PASA'?'✅':'❌'} ${f.detalle||''}`:'—';
-  const msg=`${icon} *HalalTrader PRO — ${s.ticker}*\n📅 ${s.tf==='diario'?'Diario':'Semanal'} · ${s.hora||''}\n━━━━━━━━━━━━\n📍 *${s.direccion}* · Confianza: ${s.confianza}%\n💰 Precio: ${s.precio_ref} · 📈 TP: ${s.target} · 🛑 SL: ${s.stop_loss}\n━━━━━━━━━━━━\n${fl(s.f_ema)}\n${fl(s.f_rsi)}\n${fl(s.f_adx)}\n${fl(s.f_spy)}\n${fl(s.f_vol)}\n━━━━━━━━━━━━\n📝 ${(s.tecnico||'').slice(0,180)}\n☪ _Solo informativo_`;
+  const fl=f=>f?`${f.estado==='PASA'?'✅':'❌'} ${f.detalle||''}`:'--';
+  const msg=`${icon} *HalalTrader PRO -- ${s.ticker}*\n📅 ${s.tf==='diario'?'Diario':'Semanal'} . ${s.hora||''}\n------------\n📍 *${s.direccion}* . Confianza: ${s.confianza}%\n💰 Precio: ${s.precio_ref} . 📈 TP: ${s.target} . 🛑 SL: ${s.stop_loss}\n------------\n${fl(s.f_ema)}\n${fl(s.f_rsi)}\n${fl(s.f_adx)}\n${fl(s.f_spy)}\n${fl(s.f_vol)}\n------------\n📝 ${(s.tecnico||'').slice(0,180)}\n☪ _Solo informativo_`;
   try{
     const r=await fetch(`https://api.telegram.org/bot${tok}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:chat,text:msg,parse_mode:'Markdown'})});
     const d=await r.json();
@@ -2183,9 +2380,9 @@ async function sendTG(){
   finally{btn.disabled=false;btn.textContent='📨 Enviar señal';}
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // JORNAL
-// ════════════════════════════════════════════
+// ============================================
 let entryEmo='',exitEmo='',closeVis=false;
 document.querySelectorAll('.jp').forEach(p=>{p.addEventListener('click',()=>{p.classList.toggle('ok');updPreview();});});
 document.querySelectorAll('#entryEmo .emo-btn').forEach(b=>{b.addEventListener('click',()=>{document.querySelectorAll('#entryEmo .emo-btn').forEach(x=>x.classList.remove('sel'));b.classList.add('sel');entryEmo=b.dataset.e;});});
@@ -2194,7 +2391,7 @@ document.querySelectorAll('#exitEmo .emo-btn').forEach(b=>{b.addEventListener('c
 function toggleClose(){
   closeVis=!closeVis;
   document.getElementById('closeSection').style.display=closeVis?'block':'none';
-  document.getElementById('closeToggle').textContent=closeVis?'− Ocultar cierre':'+ Añadir cierre';
+  document.getElementById('closeToggle').textContent=closeVis?'- Ocultar cierre':'+ Añadir cierre';
 }
 
 function updPreview(){
@@ -2243,16 +2440,16 @@ function saveTrade(){
   document.querySelectorAll('.emo-btn').forEach(b=>b.classList.remove('sel'));
   entryEmo='';exitEmo='';
   document.getElementById('importedFrom').style.display='none';
-  ['pRisk','pReward','pRatio','pPct'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='—';});
+  ['pRisk','pReward','pRatio','pPct'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='--';});
   document.getElementById('riskAlert').innerHTML='';
   if(closeVis)toggleClose();
   updateSidebarStats();
   toast(`${ticker} ${status==='closed'?'cerrada':'abierta'} guardada ✓`,'ok');
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // TRADES
-// ════════════════════════════════════════════
+// ============================================
 let trFilter='all';
 function setTF(mode,el){trFilter=mode;document.querySelectorAll('.tab[data-tf]').forEach(t=>t.classList.remove('on'));if(el)el.classList.add('on');renderTrades();}
 
@@ -2282,18 +2479,18 @@ function renderTrades(){
   const wrF=wF.length?Math.round(wF.filter(t=>t.pnl>0).length/wF.length*100):null;
   const wrFo=wFo.length?Math.round(wFo.filter(t=>t.pnl>0).length/wFo.length*100):null;
   const cmpEl=document.getElementById('wrCmp');
-  if(wrF!=null&&wrFo!=null)cmpEl.innerHTML=`Con 4+ filtros: <strong style="color:var(--green-t);">${wrF}%</strong> · Sin: <strong style="color:var(--red-t);">${wrFo}%</strong>`;
+  if(wrF!=null&&wrFo!=null)cmpEl.innerHTML=`Con 4+ filtros: <strong style="color:var(--green-t);">${wrF}%</strong> . Sin: <strong style="color:var(--red-t);">${wrFo}%</strong>`;
   const EMOS={calm:'😌 Tranquilo',confident:'💪 Seguro',fomo:'😰 FOMO',fear:'😨 Miedo',greedy:'🤑 Codicioso',disciplined:'🎯 Disciplinado',relieved:'😅 Aliviado',regret:'😞 Arrepentido'};
   const tbody=document.getElementById('trBody');
   if(!filtered.length){tbody.innerHTML=`<tr><td colspan="9" style="text-align:center;color:var(--t4);padding:28px;font-size:12px;">Sin operaciones</td></tr>`;return;}
   tbody.innerHTML=[...filtered].reverse().map(t=>{
     const rc=t.status==='open'?'row-o':t.pnl>0?'row-w':'row-l';
-    const pnlS=t.pnl!=null?`<span style="font-weight:700;font-family:DM Mono,monospace;color:${t.pnl>=0?'var(--green-t)':'var(--red-t)'};">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</span>`:'—';
+    const pnlS=t.pnl!=null?`<span style="font-weight:700;font-family:DM Mono,monospace;color:${t.pnl>=0?'var(--green-t)':'var(--red-t)'};">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</span>`:'--';
     const fC=(t.filters?.length||0)>=4?'c-buy':(t.filters?.length||0)>=2?'c-wait':'c-grey';
     const sC=t.status==='open'?'c-wait':t.pnl>0?'c-buy':'c-sell';
     const sL=t.status==='open'?'Abierta':t.pnl>0?'Ganadora':'Perdedora';
     const cb=t.status==='open'?`<button class="btn btn-ghost btn-sm" onclick="openClose(${t.id})">Cerrar</button>`:'';
-    return`<tr class="${rc}"><td><strong class="mono">${t.ticker}</strong></td><td><span class="chip ${t.dir==='COMPRAR'?'c-buy':'c-sell'}">${t.dir}</span></td><td><div style="font-size:12px;">${t.date}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.entry?.toFixed(2)||'—'}</div></td><td>${t.exitDate?`<div style="font-size:12px;">${t.exitDate}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.exitPrice?.toFixed(2)||'—'}</div>`:'<span style="color:var(--t4);">—</span>'}</td><td>${pnlS}</td><td><span class="chip ${fC}">${t.filters?.length||0}/5</span></td><td style="font-size:11.5px;color:var(--t3);">${EMOS[t.entryEmo]||t.entryEmo||'—'}</td><td><span class="chip ${sC}">${sL}</span></td><td style="display:flex;gap:3px;">${cb}<button class="btn btn-sm" style="background:var(--red-bg);color:var(--red-t);padding:4px 9px;" onclick="delTrade(${t.id})">✕</button></td></tr>`;
+    return`<tr class="${rc}"><td><strong class="mono">${t.ticker}</strong></td><td><span class="chip ${t.dir==='COMPRAR'?'c-buy':'c-sell'}">${t.dir}</span></td><td><div style="font-size:12px;">${t.date}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.entry?.toFixed(2)||'--'}</div></td><td>${t.exitDate?`<div style="font-size:12px;">${t.exitDate}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.exitPrice?.toFixed(2)||'--'}</div>`:'<span style="color:var(--t4);">--</span>'}</td><td>${pnlS}</td><td><span class="chip ${fC}">${t.filters?.length||0}/5</span></td><td style="font-size:11.5px;color:var(--t3);">${EMOS[t.entryEmo]||t.entryEmo||'--'}</td><td><span class="chip ${sC}">${sL}</span></td><td style="display:flex;gap:3px;">${cb}<button class="btn btn-sm" style="background:var(--red-bg);color:var(--red-t);padding:4px 9px;" onclick="delTrade(${t.id})">✕</button></td></tr>`;
   }).join('');
 }
 function openClose(id){
@@ -2303,7 +2500,7 @@ function openClose(id){
   const t=trades.find(x=>x.id===id);if(!t)return;
   t.exitPrice=+p;t.exitDate=d;t.status='closed';t.pnl=((+p-t.entry)/t.entry)*t.size*(t.dir==='COMPRAR'?1:-1);
   localStorage.setItem(K_TR,JSON.stringify(trades));renderTrades();updateSidebarStats();
-  toast(`${t.ticker} cerrada · P&L: ${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}`,t.pnl>=0?'ok':'warn');
+  toast(`${t.ticker} cerrada . P&L: ${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}`,t.pnl>=0?'ok':'warn');
 }
 async function delTrade(id){
   const ok=await confirm2('Eliminar operación','¿Seguro? No se puede deshacer.');
@@ -2318,9 +2515,9 @@ function exportCSV(){
   const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(rows.map(r=>r.join(',')).join('\n'));a.download=`halaltrader_${new Date().toISOString().split('T')[0]}.csv`;a.click();toast('CSV exportado','ok');
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // WEEKLY
-// ════════════════════════════════════════════
+// ============================================
 function loadWeekly(){
   const wk=document.getElementById('weekPicker').value;
   if(!wk){toast('Selecciona una semana','warn');return;}
@@ -2337,9 +2534,9 @@ function loadWeekly(){
   const best=[...closed].sort((a,b)=>(b.pnl||0)-(a.pnl||0))[0];
   const ws=document.getElementById('weekStats');ws.style.display='block';
   document.getElementById('wk-ops').textContent=wkTrades.length;
-  document.getElementById('wk-wr').textContent=closed.length?wr+'%':'—';
+  document.getElementById('wk-wr').textContent=closed.length?wr+'%':'--';
   const pEl=document.getElementById('wk-pnl');pEl.textContent=(pnl>=0?'+':'')+'$'+pnl.toFixed(0);pEl.style.color=pnl>=0?'var(--green-t)':'var(--red-t)';
-  document.getElementById('wk-best').textContent=best?best.ticker:'—';
+  document.getElementById('wk-best').textContent=best?best.ticker:'--';
   const notes=JSON.parse(localStorage.getItem(K_WK)||'{}');
   document.getElementById('weekNotes').value=notes[wk]||'';
   const content=document.getElementById('weekContent');
@@ -2365,9 +2562,9 @@ function saveWeeklyNotes(){
   toast('Notas guardadas ✓','ok');
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // PROGRESS
-// ════════════════════════════════════════════
+// ============================================
 const _ch={};
 function mkChart(id,type,data,opts){
   const el=document.getElementById(id);if(!el)return;
@@ -2423,9 +2620,9 @@ function renderProgress(){
     </div>`;
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // SETTINGS / CONFIG
-// ════════════════════════════════════════════
+// ============================================
 function loadCfg(){
   const def={capital:10000,risk:2,sl:5,tp:10,minFilters:3};
   try{return{...def,...JSON.parse(localStorage.getItem(K_CFG)||'{}')};} catch(e){return def;}
@@ -2459,7 +2656,7 @@ async function testAV(){
   try{
     const data=await fetchAV('AAPL',10);
     const last=data[data.length-1];
-    if(el){el.style.background='var(--green-bg)';el.style.color='var(--green-t)';el.style.border='1px solid oklch(0.72 0.22 155/0.25)';el.textContent=`✅ Clave válida. AAPL: $${last.close.toFixed(2)} · ${data.length} días de datos. ¡Listo para escanear!`;}
+    if(el){el.style.background='var(--green-bg)';el.style.color='var(--green-t)';el.style.border='1px solid oklch(0.72 0.22 155/0.25)';el.textContent=`✅ Clave válida. AAPL: $${last.close.toFixed(2)} . ${data.length} días de datos. ¡Listo para escanear!`;}
     toast('Clave Twelvedata válida ✓','ok');
   }catch(e){
     if(el){el.style.background='var(--red-bg)';el.style.color='var(--red-t)';el.style.border='1px solid oklch(0.65 0.26 25/0.25)';el.textContent='❌ '+e.message;}
@@ -2489,9 +2686,9 @@ async function confirmClear(){
   updateSidebarStats();loadCfgForm();toast('Datos eliminados','info');
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // SIDEBAR STATS
-// ════════════════════════════════════════════
+// ============================================
 function updateSidebarStats(){
   const cfg=loadCfg();
   const trades=JSON.parse(localStorage.getItem(K_TR)||'[]');
@@ -2502,18 +2699,18 @@ function updateSidebarStats(){
   const mEl=document.getElementById('sCapMeta');if(mEl){mEl.textContent=(parseFloat(pct)>=0?'📈 +':'📉 ')+pct+'% desde inicio';mEl.style.color=parseFloat(pct)>=0?'var(--green-t)':'var(--red-t)';}
 }
 
-// ════════════════════════════════════════════
+// ============================================
 // INIT
-// ════════════════════════════════════════════
+// ============================================
 
-// ════════════════════════════════════════════
-// INTERNATIONALISATION — COMPLETE
-// ════════════════════════════════════════════
+// ============================================
+// INTERNATIONALISATION -- COMPLETE
+// ============================================
 const T = {
   es: {
     // App
     brand_sub:'PRO Edition', capital_label:'Capital', halal_badge:'100% Halal',
-    halal_sub:'Estrategia verificada', footer1:'HalalTrader PRO — Solo informativo, no es asesoramiento financiero.',
+    halal_sub:'Estrategia verificada', footer1:'HalalTrader PRO -- Solo informativo, no es asesoramiento financiero.',
     footer2:'Verifica siempre el cumplimiento halal con tu académico de confianza.',
     // Modal
     modal_confirm:'Confirmar', cancel:'Cancelar', confirm:'Confirmar',
@@ -2530,7 +2727,7 @@ const T = {
     scan_ready:'Listo para escanear',
     scan_scanning:'Escaneando...', loading:'Analizando mercado...',
     forex_warn:'Forex: solo con cuenta islámica sin swap.',
-    no_signal:'Sin señales activas — mercado en corrección.',
+    no_signal:'Sin señales activas -- mercado en corrección.',
     no_results:'Sin resultados',
     tile_scanned:'Escaneados', tile_buy:'Comprar', tile_sell:'Vender',
     tile_wait:'Esperar', tile_errors:'Errores',
@@ -2589,12 +2786,12 @@ const T = {
     emo_disciplined:'🎯 Disciplinado', emo_relieved:'😅 Aliviado', emo_regret:'😞 Arrepentido',
     // Directions in select
     opt_buy:'↑ COMPRAR', opt_sell:'↓ VENDER',
-    tf_1min:'1M — Scalping (5-30min)',
-    tf_5min:'5M — Muy activo (30min-2h)',
-    tf_15min:'15M — Intraday (1-4h)',
-    tf_30min:'30M — Moderado (2-6h)',
-    tf_1h:'1H — Intraday largo (2-8h)',
-    tf_4h:'4H — Swing corto (1-3d)',
+    tf_1min:'1M -- Scalping (5-30min)',
+    tf_5min:'5M -- Muy activo (30min-2h)',
+    tf_15min:'15M -- Intraday (1-4h)',
+    tf_30min:'30M -- Moderado (2-6h)',
+    tf_1h:'1H -- Intraday largo (2-8h)',
+    tf_4h:'4H -- Swing corto (1-3d)',
     tf_daily:'Diaria (3-15d)',
     tf_weekly:'Semanal (3-8sem)',
     tf_both:'Diaria + Semanal',
@@ -2615,7 +2812,7 @@ const T = {
     og_metals:'Metales Spot',
     og_forex:'Forex Spot',
     forex_warn_full:'Forex: solo con cuenta islámica sin swap.',
-    td_info:'Twelvedata · 800/día · sin límite de velocidad',
+    td_info:'Twelvedata . 800/día . sin límite de velocidad',
     about_5f:'5 Filtros',
     about_5f_sub:'EMA, RSI, ADX, SPY, Vol',
     about_wr:'73% Win Rate',
@@ -2649,7 +2846,7 @@ const T = {
 
   en: {
     brand_sub:'PRO Edition', capital_label:'Capital', halal_badge:'100% Halal',
-    halal_sub:'Verified strategy', footer1:'HalalTrader PRO — For informational purposes only.',
+    halal_sub:'Verified strategy', footer1:'HalalTrader PRO -- For informational purposes only.',
     footer2:'Always verify halal compliance with your trusted scholar.',
     modal_confirm:'Confirm', cancel:'Cancel', confirm:'Confirm',
     nav_market:'Market', nav_portfolio:'My Portfolio', nav_account:'Account',
@@ -2663,7 +2860,7 @@ const T = {
     scan_ready:'Ready to scan',
     scan_scanning:'Scanning...', loading:'Analyzing market...',
     forex_warn:'Forex: Islamic account without swap only.',
-    no_signal:'No active signals — market in correction.',
+    no_signal:'No active signals -- market in correction.',
     no_results:'No results',
     tile_scanned:'Scanned', tile_buy:'Buy', tile_sell:'Sell',
     tile_wait:'Wait', tile_errors:'Errors',
@@ -2711,12 +2908,12 @@ const T = {
     emo_fear:'😨 Fear', emo_greedy:'🤑 Greedy',
     emo_disciplined:'🎯 Disciplined', emo_relieved:'😅 Relieved', emo_regret:'😞 Regret',
     opt_buy:'↑ BUY', opt_sell:'↓ SELL',
-    tf_1min:'1M — Scalping (5-30min)',
-    tf_5min:'5M — Very active (30min-2h)',
-    tf_15min:'15M — Intraday (1-4h)',
-    tf_30min:'30M — Moderate (2-6h)',
-    tf_1h:'1H — Long intraday (2-8h)',
-    tf_4h:'4H — Short swing (1-3d)',
+    tf_1min:'1M -- Scalping (5-30min)',
+    tf_5min:'5M -- Very active (30min-2h)',
+    tf_15min:'15M -- Intraday (1-4h)',
+    tf_30min:'30M -- Moderate (2-6h)',
+    tf_1h:'1H -- Long intraday (2-8h)',
+    tf_4h:'4H -- Short swing (1-3d)',
     tf_daily:'Daily (3-15d)',
     tf_weekly:'Weekly (3-8w)',
     tf_both:'Daily + Weekly',
@@ -2737,7 +2934,7 @@ const T = {
     og_metals:'Spot Metals',
     og_forex:'Spot Forex',
     forex_warn_full:'Forex: Islamic account without swap only.',
-    td_info:'Twelvedata · 800/day · no rate limit',
+    td_info:'Twelvedata . 800/day . no rate limit',
     about_5f:'5 Filters',
     about_5f_sub:'EMA, RSI, ADX, SPY, Vol',
     about_wr:'73% Win Rate',
@@ -2771,7 +2968,7 @@ const T = {
 
   fr: {
     brand_sub:'Edition PRO', capital_label:'Capital', halal_badge:'100% Halal',
-    halal_sub:'Strategie verifiee', footer1:'HalalTrader PRO — Informatif uniquement.',
+    halal_sub:'Strategie verifiee', footer1:'HalalTrader PRO -- Informatif uniquement.',
     footer2:'Verifiez toujours la conformite halal avec votre erudite.',
     modal_confirm:'Confirmer', cancel:'Annuler', confirm:'Confirmer',
     nav_market:'Marche', nav_portfolio:'Mon Portefeuille', nav_account:'Compte',
@@ -2785,7 +2982,7 @@ const T = {
     scan_ready:'Pret a scanner',
     scan_scanning:'Analyse...', loading:'Analyse du marche...',
     forex_warn:'Forex: compte islamique sans swap uniquement.',
-    no_signal:'Pas de signaux actifs — marche en correction.',
+    no_signal:'Pas de signaux actifs -- marche en correction.',
     no_results:'Aucun resultat',
     tile_scanned:'Analyses', tile_buy:'Acheter', tile_sell:'Vendre',
     tile_wait:'Attendre', tile_errors:'Erreurs',
@@ -2833,12 +3030,12 @@ const T = {
     emo_fear:'😨 Peur', emo_greedy:'🤑 Cupide',
     emo_disciplined:'🎯 Discipline', emo_relieved:'😅 Soulage', emo_regret:'😞 Regret',
     opt_buy:'↑ ACHETER', opt_sell:'↓ VENDRE',
-    tf_1min:'1M — Scalping (5-30min)',
-    tf_5min:'5M — Tres actif (30min-2h)',
-    tf_15min:'15M — Intraday (1-4h)',
-    tf_30min:'30M — Modere (2-6h)',
-    tf_1h:'1H — Intraday long (2-8h)',
-    tf_4h:'4H — Swing court (1-3j)',
+    tf_1min:'1M -- Scalping (5-30min)',
+    tf_5min:'5M -- Tres actif (30min-2h)',
+    tf_15min:'15M -- Intraday (1-4h)',
+    tf_30min:'30M -- Modere (2-6h)',
+    tf_1h:'1H -- Intraday long (2-8h)',
+    tf_4h:'4H -- Swing court (1-3j)',
     tf_daily:'Journalier (3-15j)',
     tf_weekly:'Hebdomadaire (3-8sem)',
     tf_both:'Journalier + Hebdo',
@@ -2859,7 +3056,7 @@ const T = {
     og_metals:'Metaux Spot',
     og_forex:'Forex Spot',
     forex_warn_full:'Forex: compte islamique sans swap uniquement.',
-    td_info:'Twelvedata · 800/jour · sans limite de vitesse',
+    td_info:'Twelvedata . 800/jour . sans limite de vitesse',
     about_5f:'5 Filtres',
     about_5f_sub:'EMA, RSI, ADX, SPY, Vol',
     about_wr:'73% Taux de reussite',
@@ -2893,7 +3090,7 @@ const T = {
 
   ar: {
     brand_sub:'الإصدار الاحترافي', capital_label:'رأس المال', halal_badge:'100% حلال',
-    halal_sub:'استراتيجية معتمدة', footer1:'HalalTrader PRO — للأغراض المعلوماتية فقط.',
+    halal_sub:'استراتيجية معتمدة', footer1:'HalalTrader PRO -- للأغراض المعلوماتية فقط.',
     footer2:'تحقق دائمًا من الامتثال الحلال مع عالمك الموثوق.',
     modal_confirm:'تأكيد', cancel:'إلغاء', confirm:'تأكيد',
     nav_market:'السوق', nav_portfolio:'محفظتي', nav_account:'الحساب',
@@ -2907,7 +3104,7 @@ const T = {
     scan_ready:'جاهز للمسح',
     scan_scanning:'جارٍ المسح...', loading:'تحليل السوق...',
     forex_warn:'الفوركس: حساب إسلامي بدون سواب فقط.',
-    no_signal:'لا توجد إشارات نشطة — السوق في تصحيح.',
+    no_signal:'لا توجد إشارات نشطة -- السوق في تصحيح.',
     no_results:'لا نتائج',
     tile_scanned:'تم المسح', tile_buy:'شراء', tile_sell:'بيع',
     tile_wait:'انتظار', tile_errors:'أخطاء',
@@ -2955,12 +3152,12 @@ const T = {
     emo_fear:'😨 خوف', emo_greedy:'🤑 جشع',
     emo_disciplined:'🎯 منضبط', emo_relieved:'😅 مرتاح', emo_regret:'😞 ندم',
     opt_buy:'↑ شراء', opt_sell:'↓ بيع',
-    tf_1min:'1 دقيقة — سكالبينج (5-30 دقيقة)',
-    tf_5min:'5 دقائق — نشط جداً (30د-2س)',
-    tf_15min:'15 دقيقة — إنتراداي (1-4 ساعات)',
-    tf_30min:'30 دقيقة — معتدل (2-6 ساعات)',
-    tf_1h:'1 ساعة — إنتراداي طويل (2-8 ساعات)',
-    tf_4h:'4 ساعات — سوينج قصير (1-3 أيام)',
+    tf_1min:'1 دقيقة -- سكالبينج (5-30 دقيقة)',
+    tf_5min:'5 دقائق -- نشط جداً (30د-2س)',
+    tf_15min:'15 دقيقة -- إنتراداي (1-4 ساعات)',
+    tf_30min:'30 دقيقة -- معتدل (2-6 ساعات)',
+    tf_1h:'1 ساعة -- إنتراداي طويل (2-8 ساعات)',
+    tf_4h:'4 ساعات -- سوينج قصير (1-3 أيام)',
     tf_daily:'يومي (3-15 يوم)',
     tf_weekly:'أسبوعي (3-8 أسابيع)',
     tf_both:'يومي + أسبوعي',
@@ -2981,7 +3178,7 @@ const T = {
     og_metals:'المعادن الفورية',
     og_forex:'فوركس فوري',
     forex_warn_full:'الفوركس: حساب إسلامي بدون سواب فقط.',
-    td_info:'Twelvedata · 800/يوم · بدون حد للسرعة',
+    td_info:'Twelvedata . 800/يوم . بدون حد للسرعة',
     about_5f:'5 مرشحات',
     about_5f_sub:'EMA, RSI, ADX, SPY, حجم',
     about_wr:'73% معدل فوز',
@@ -3015,7 +3212,7 @@ const T = {
 
   no: {
     brand_sub:'PRO Edition', capital_label:'Kapital', halal_badge:'100% Halal',
-    halal_sub:'Verifisert strategi', footer1:'HalalTrader PRO — Kun informasjonsformål.',
+    halal_sub:'Verifisert strategi', footer1:'HalalTrader PRO -- Kun informasjonsformål.',
     footer2:'Verifiser alltid halal-samsvar med din betrodde lærd.',
     modal_confirm:'Bekreft', cancel:'Avbryt', confirm:'Bekreft',
     nav_market:'Marked', nav_portfolio:'Min portefølje', nav_account:'Konto',
@@ -3029,7 +3226,7 @@ const T = {
     scan_ready:'Klar til skanning',
     scan_scanning:'Skanner...', loading:'Analyserer markedet...',
     forex_warn:'Forex: kun islamsk konto uten swap.',
-    no_signal:'Ingen aktive signaler — markedet korrigerer.',
+    no_signal:'Ingen aktive signaler -- markedet korrigerer.',
     no_results:'Ingen resultater',
     tile_scanned:'Skannet', tile_buy:'Kjøp', tile_sell:'Selg',
     tile_wait:'Vent', tile_errors:'Feil',
@@ -3077,12 +3274,12 @@ const T = {
     emo_fear:'😨 Frykt', emo_greedy:'🤑 Grisk',
     emo_disciplined:'🎯 Disiplinert', emo_relieved:'😅 Lettet', emo_regret:'😞 Anger',
     opt_buy:'↑ KJØP', opt_sell:'↓ SELG',
-    tf_1min:'1M — Scalping (5-30min)',
-    tf_5min:'5M — Veldig aktiv (30min-2t)',
-    tf_15min:'15M — Intradag (1-4t)',
-    tf_30min:'30M — Moderat (2-6t)',
-    tf_1h:'1T — Lang intradag (2-8t)',
-    tf_4h:'4T — Kort swing (1-3d)',
+    tf_1min:'1M -- Scalping (5-30min)',
+    tf_5min:'5M -- Veldig aktiv (30min-2t)',
+    tf_15min:'15M -- Intradag (1-4t)',
+    tf_30min:'30M -- Moderat (2-6t)',
+    tf_1h:'1T -- Lang intradag (2-8t)',
+    tf_4h:'4T -- Kort swing (1-3d)',
     tf_daily:'Daglig (3-15d)',
     tf_weekly:'Ukentlig (3-8u)',
     tf_both:'Daglig + Ukentlig',
@@ -3103,7 +3300,7 @@ const T = {
     og_metals:'Spot-metaller',
     og_forex:'Spot-forex',
     forex_warn_full:'Forex: kun islamsk konto uten swap.',
-    td_info:'Twelvedata · 800/dag · ingen hastighetsbegrensning',
+    td_info:'Twelvedata . 800/dag . ingen hastighetsbegrensning',
     about_5f:'5 Filtre',
     about_5f_sub:'EMA, RSI, ADX, SPY, Vol',
     about_wr:'73% vinnrate',
@@ -3253,11 +3450,11 @@ function initLang() {
 
 
 
-// ════════════════════════════════════════════
+// ============================================
 // ACCESS CODE SYSTEM
-// ════════════════════════════════════════════
+// ============================================
 
-// Valid access codes — in production these would be server-validated
+// Valid access codes -- in production these would be server-validated
 // Format: CODE → expiry date (null = never expires)
 const ACCESS_CODES = {
   'HALAL-2024-GOLD': null,
@@ -3303,7 +3500,7 @@ function tryLogin() {
 
   setTimeout(() => {
     if (ACCESS_CODES.hasOwnProperty(code)) {
-      // Valid — save session
+      // Valid -- save session
       const expiry = new Date();
       expiry.setDate(expiry.getDate() + SESSION_EXPIRY_DAYS);
       localStorage.setItem(SESSION_KEY, JSON.stringify({
@@ -3352,9 +3549,9 @@ function logout() {
 
 // Check session on load
 if (!checkSession()) {
-  // Show login — it's already visible by default
+  // Show login -- it's already visible by default
 } else {
-  // Already logged in — hide login screen immediately
+  // Already logged in -- hide login screen immediately
   const screen = document.getElementById('loginScreen');
   if (screen) screen.style.display = 'none';
 }
@@ -3391,7 +3588,7 @@ function showInstallButton() {
 
 
 
-// ── DEMO MODE — shows sample signals without API key ──────────────
+// -- DEMO MODE -- shows sample signals without API key --------------
 function runDemo() {
   if(!checkSession()){
     document.getElementById('loginScreen').style.display='flex';
@@ -3404,7 +3601,7 @@ function runDemo() {
   const DEMO_SIGNALS = [
     {
       ticker:'AAPL', dir:'COMPRAR', tf:'daily', tfLabel:'Diario',
-      tfCfg:{hold:'3–15 días', entry:'Apertura mañana', review:'Cada día'},
+      tfCfg:{hold:'3-15 días', entry:'Apertura mañana', review:'Cada día'},
       ok:4, price:'213.49', chg:'+1.24', rsiVal:'58.3', adxVal:'28.4',
       fd:{
         ema:{ok:true,  v:'↑Cruce EMA9/21'},
@@ -3423,7 +3620,7 @@ function runDemo() {
     },
     {
       ticker:'NVDA', dir:'COMPRAR', tf:'daily', tfLabel:'15M',
-      tfCfg:{hold:'1–4 horas', entry:'Próxima vela 15M', review:'Cada 15 min'},
+      tfCfg:{hold:'1-4 horas', entry:'Próxima vela 15M', review:'Cada 15 min'},
       ok:5, price:'875.20', chg:'+2.31', rsiVal:'62.1', adxVal:'34.7',
       fd:{
         ema:{ok:true,  v:'↑Cruce EMA5/13'},
@@ -3442,7 +3639,7 @@ function runDemo() {
     },
     {
       ticker:'XAUUSD', dir:'VENDER', tf:'daily', tfLabel:'1H',
-      tfCfg:{hold:'2–8 horas', entry:'En las próximas 2h', review:'Cada hora'},
+      tfCfg:{hold:'2-8 horas', entry:'En las próximas 2h', review:'Cada hora'},
       ok:3, price:'2312.50', chg:'-0.45', rsiVal:'44.2', adxVal:'22.1',
       fd:{
         ema:{ok:true,  v:'↓Cruce EMA5/13'},
@@ -3469,7 +3666,7 @@ function runDemo() {
   const cards = sorted.map(s => {
     const cc  = s.dir==='COMPRAR'?'buy-s':s.dir==='VENDER'?'sell-s':'';
     const chp = s.dir==='COMPRAR'?'c-buy':s.dir==='VENDER'?'c-sell':'c-wait';
-    const di  = s.dir==='COMPRAR'?'↑':s.dir==='VENDER'?'↓':'–';
+    const di  = s.dir==='COMPRAR'?'↑':s.dir==='VENDER'?'↓':'-';
     const dirLabel = s.dir==='COMPRAR'?t('dir_buy'):s.dir==='VENDER'?t('dir_sell'):t('dir_wait');
     const fd  = s.fd;
     const logo  = LOGOS[s.ticker];
@@ -3488,10 +3685,10 @@ function runDemo() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
           <div style="background:oklch(0.65 0.20 165/0.1);border:1px solid oklch(0.65 0.20 165/0.25);border-radius:8px;padding:8px;">
             <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_zone')}</div>
-            <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--primary);">$${lv.entryLow} – $${lv.entryHigh}</div>
+            <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--primary);">$${lv.entryLow} - $${lv.entryHigh}</div>
           </div>
           <div style="background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:8px;padding:8px;">
-            <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_sl')} −${lv.slPct}%</div>
+            <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_sl')} -${lv.slPct}%</div>
             <div style="font-family:DM Mono,monospace;font-size:11px;font-weight:700;color:var(--red-t);">$${lv.sl}</div>
           </div>
           <div style="background:oklch(0.72 0.22 155/0.1);border:1px solid oklch(0.72 0.22 155/0.25);border-radius:8px;padding:8px;">
@@ -3544,7 +3741,7 @@ function runDemo() {
       <div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.20 165/0.07);border:1px solid oklch(0.65 0.20 165/0.18);border-radius:9px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;">
         <div>
           <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_hold')}</div>
-          <div style="font-size:11px;font-weight:700;color:var(--primary);">${s.tfCfg?.hold||'3–15 días'}</div>
+          <div style="font-size:11px;font-weight:700;color:var(--primary);">${s.tfCfg?.hold||'3-15 días'}</div>
         </div>
         <div>
           <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;color:var(--t4);margin-bottom:3px;">${t('sig_entry')}</div>
@@ -3573,7 +3770,7 @@ function runDemo() {
         </div>
         <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
           <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">BB %B</div>
-          <div style="font-size:10px;font-weight:700;">${s.bbPctB??'—'}%</div>
+          <div style="font-size:10px;font-weight:700;">${s.bbPctB??'--'}%</div>
         </div>
         <div style="background:var(--muted2);border-radius:8px;padding:7px 9px;text-align:center;">
           <div style="font-size:7px;color:var(--t4);margin-bottom:2px;">Confirmación</div>
@@ -3590,13 +3787,13 @@ function runDemo() {
   area.innerHTML = `
     <div style="padding:8px 0 16px;display:flex;align-items:center;gap:10px;">
       <div style="padding:6px 14px;background:oklch(0.78 0.16 70/0.15);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:8px;font-size:12px;color:var(--amber-t);font-weight:700;">
-        🎭 MODO DEMO — datos simulados para preview
+        🎭 MODO DEMO -- datos simulados para preview
       </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;">
       ${cards}
     </div>`;
-  toast('Demo cargado — 3 señales de ejemplo con niveles profesionales','ok');
+  toast('Demo cargado -- 3 señales de ejemplo con niveles profesionales','ok');
 }
 
 buildAssets();
