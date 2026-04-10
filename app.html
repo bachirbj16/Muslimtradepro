@@ -1074,11 +1074,12 @@ function rsi(data,p=14){
   let g=0,l=0;
   for(let i=1;i<=p;i++){const d=data[i]-data[i-1];d>0?g+=d:l-=d;}
   let ag=g/p,al=l/p;
-  r[p]=100-100/(1+ag/Math.max(al,1e-9));
+  // Edge case: flat data (no gains, no losses) -> RSI = 50
+  r[p]=(ag<1e-10&&al<1e-10)?50:100-100/(1+ag/Math.max(al,1e-10));
   for(let i=p+1;i<data.length;i++){
     const d=data[i]-data[i-1],gg=d>0?d:0,ll=d<0?-d:0;
     ag=(ag*(p-1)+gg)/p;al=(al*(p-1)+ll)/p;
-    r[i]=100-100/(1+ag/Math.max(al,1e-9));
+    r[i]=(ag<1e-10&&al<1e-10)?50:100-100/(1+ag/Math.max(al,1e-10));
   }
   return r;
 }
