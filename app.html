@@ -1152,7 +1152,7 @@ function toWeekly(daily){
 // -- Resample candles to higher timeframe -------------------------
 // groupSize: how many candles to combine into one
 function resampleCandles(candles, groupSize) {
-  if(candles.length < groupSize * 3) return [];
+  if(candles.length < groupSize * 2) return []; // need at least 2 full groups
   const result = [];
   for(let i = 0; i + groupSize <= candles.length; i += groupSize) {
     const group = candles.slice(i, i + groupSize);
@@ -1185,7 +1185,7 @@ function getHigherTFTrend(candles, primaryInterval) {
   if(!groupSize) return 'NEUTRAL'; // daily/weekly have no higher TF
 
   const higher = resampleCandles(candles, groupSize);
-  if(higher.length < 20) return 'NEUTRAL';
+  if(higher.length < 12) return 'NEUTRAL'; // need 12 groups for reliable EMA/RSI
 
   const cl = higher.map(c=>c.close);
   const n  = cl.length - 1;
@@ -1207,8 +1207,10 @@ function getHigherTFTrend(candles, primaryInterval) {
   const macdBearH = (macdH.hist[n]??0) < 0;
 
   // Higher TF is BULL if: EMA trend up + RSI healthy + MACD positive
-  const bullScore = (aboveH?1:0) + (rsiOkH?1:0) + (macdBullH?1:0);
-  const bearScore = (!aboveH?1:0) + (rsiOkH?1:0) + (macdBearH?1:0);
+  // FIX BUG 2: Bear uses lower RSI zone (30-65) not same as bull (35-70)
+  const rsiBearH = rsiValH >= 30 && rsiValH <= 65;
+  const bullScore = (aboveH?1:0)  + (rsiOkH?1:0)   + (macdBullH?1:0);
+  const bearScore = (!aboveH?1:0) + (rsiBearH?1:0)  + (macdBearH?1:0);
 
   if(bullScore >= 2) return 'BULL';
   if(bearScore >= 2) return 'BEAR';
@@ -1217,6 +1219,11 @@ function getHigherTFTrend(candles, primaryInterval) {
 
 function analyze(prices,spyMap,minF,tfCfg=null){
   if(prices.length<20)return null;
+
+  // FIX: interval defined at TOP — used throughout function
+  const interval = tfCfg?.interval || '1day';
+  const isIntraday = ['1min','5min','15min','30min','1h'].includes(interval);
+
   const cl=prices.map(p=>p.close),hi=prices.map(p=>p.high),lo=prices.map(p=>p.low),vo=prices.map(p=>p.vol),dt=prices.map(p=>p.date);
   const EF=tfCfg?.emaF||9, ES=tfCfg?.emaS||21, RP=tfCfg?.rsiP||14, AP=tfCfg?.adxP||14;
   const ADX_MIN=tfCfg?.adxMin||15, RSI_LO=tfCfg?.rsiLo||35, RSI_HI=tfCfg?.rsiHi||70;
@@ -1228,8 +1235,11 @@ function analyze(prices,spyMap,minF,tfCfg=null){
 
   const n=prices.length-1;
   if(!e9[n]||!e21[n])return null;
+
+  // FIX IMPROVEMENT 3: crossover window — 2 candles intraday, 3 for higher TF
+  const crossLook = isIntraday ? 2 : 3;
   let cup=false,cdn=false;
-  for(let k=Math.max(1,n-2);k<=n;k++){
+  for(let k=Math.max(1,n-crossLook+1);k<=n;k++){
     if(e9[k-1]!=null&&e21[k-1]!=null){
       if(e9[k-1]<=e21[k-1]&&e9[k]>e21[k])cup=true;
       if(e9[k-1]>=e21[k-1]&&e9[k]<e21[k])cdn=true;
@@ -1238,26 +1248,32 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const above=e9[n]>e21[n];
   const rn=rv[n]??50, an=av[n]??0, vn=vo[n], vm20=vm[n]??0;
 
-  // -- MACD confirmation -----------------------------
+  // -- MACD confirmation (IMPROVED) ------------------
   const macdHist     = mc.hist[n]??0;
   const macdHistPrev = mc.hist[n-1]??0;
-  const macdBull = macdHist > 0 && macdHist > macdHistPrev;  // histogram rising above zero
-  const macdBear = macdHist < 0 && macdHist < macdHistPrev;  // histogram falling below zero
+  const macdHist2    = mc.hist[n-2]??0;
+  // BUG FIX 4: Bull = histogram positive AND rising (momentum building)
+  // Bear = histogram negative OR declining from positive (early reversal)
+  const macdBull = macdHist > 0 && macdHist > macdHistPrev;
+  const macdBear = macdHist < 0 && macdHist < macdHistPrev;
+  // Also catch early divergence: MACD declining for 2 bars even if still positive
+  const macdBearEarly = macdHistPrev > 0 && macdHist < macdHistPrev && macdHist < macdHist2;
 
-  // -- Bollinger Band position -----------------------
-  const pctB   = bb.pctB[n]??0.5;        // 0=lower band, 1=upper band
-  const bbBull = pctB > 0.5 && pctB < 0.85; // price in upper half, not overbought
-  const bbBear = pctB < 0.5 && pctB > 0.15; // price in lower half, not oversold
+  // -- Bollinger Band position (IMPROVED) ------------
+  const pctB   = bb.pctB[n]??0.5;
+  // FIX IMPROVEMENT 5: tighter momentum zones
+  const bbBull = pctB > 0.55 && pctB < 0.82;  // strong upper momentum, not overbought
+  const bbBear = pctB < 0.45 && pctB > 0.18;  // strong lower momentum, not oversold
 
-  // -- Market structure: higher highs / lower lows ---
+  // -- Market structure: higher highs / lower lows (IMPROVED) ---
   const lookMS = Math.min(10, n-1);
   const prevHi = Math.max(...hi.slice(n-lookMS, n));
   const prevLo = Math.min(...lo.slice(n-lookMS, n));
-  const structureBull = cl[n] > prevHi * 0.998; // breaking above recent highs
-  const structureBear = cl[n] < prevLo * 1.002;  // breaking below recent lows
+  // FIX BUG 5: 0.5% tolerance instead of 0.2% — catches more valid breakouts
+  const structureBull = cl[n] > prevHi * 0.995;
+  const structureBear = cl[n] < prevLo * 1.005;
 
   // -- Session filter: US market hours only for intraday --
-  const isIntraday = ['1min','5min','15min','30min','1h'].includes(tfCfg?.interval);
   let sessionOk = true;
   if(isIntraday){
     const lastDate = dt[n];
@@ -1265,37 +1281,39 @@ function analyze(prices,spyMap,minF,tfCfg=null){
       const timePart = lastDate.split(' ')[1];
       const [hh, mm] = timePart.split(':').map(Number);
       const totalMin = hh*60 + mm;
-      // US market: 09:30-15:45 ET (avoid last 15 min choppiness)
       sessionOk = totalMin >= 570 && totalMin <= 945;
     }
   }
 
-  // -- 5 core filters (same as before) --------------
-  const f1=cup||cdn;
-  const f2b=rn>=RSI_LO&&rn<=RSI_HI, f2s=rn>=(RSI_LO-5)&&rn<=(RSI_HI-5);
-  const f3=an>ADX_MIN;
-  const f4=spyMap?(spyMap[dt[n]]!==false):true;
-  const f5=vm20>0?vn>=vm20*0.7:true;
-  const ok=[f1,f2b||f2s,f3,f4,f5].filter(Boolean).length;
+  // -- 5 core filters --------------------------------
+  const f1 = cup || cdn;
+  // FIX BUG 3: symmetric RSI ranges — buy 35-70, sell 30-65
+  const f2b = rn >= RSI_LO     && rn <= RSI_HI;      // buy zone
+  const f2s = rn >= (RSI_LO-5) && rn <= (RSI_HI-5);  // sell zone (slightly lower)
+  const f3  = an > ADX_MIN;
+  const f4  = spyMap ? (spyMap[dt[n]] !== false) : true;
+  // FIX IMPROVEMENT 2: volume threshold — 85% intraday, 80% daily
+  const volThresh = isIntraday ? 0.85 : 0.80;
+  const f5  = vm20 > 0 ? vn >= vm20 * volThresh : true;
+  const ok  = [f1, f2b||f2s, f3, f4, f5].filter(Boolean).length;
 
-  // -- Higher TF trend (MTF confirmation) --------------
+  // -- Higher TF trend (MTF confirmation) -------
+  // FIX BUG 1: interval already defined at top — no TDZ error
   const mtfTrend = getHigherTFTrend(prices, interval);
-  // MTF alignment: signal direction must not oppose higher TF trend
-  // NEUTRAL = allow any direction, BULL = only buys, BEAR = only sells
   const mtfAligned = (dir2) =>
     mtfTrend === 'NEUTRAL' ||
     (dir2 === 'COMPRAR' && mtfTrend === 'BULL') ||
     (dir2 === 'VENDER'  && mtfTrend === 'BEAR');
 
-  // -- Direction with MACD + BB + Structure + MTF confirmation --
-  let dir='ESPERAR';
-  if(ok>=Math.min(minF,3) && sessionOk){
+  // -- Direction with MACD + BB + Structure + MTF --
+  let dir = 'ESPERAR';
+  if(ok >= Math.min(minF,3) && sessionOk){
     if(above && f2b){
       const extraConf = (macdBull?1:0) + (bbBull?1:0) + (structureBull?1:0);
-      // Need: 1 extra confirmation AND MTF not opposing
       dir = (extraConf >= 1 && mtfAligned('COMPRAR')) ? 'COMPRAR' : 'ESPERAR';
     } else if(!above && f2s){
-      const extraConf = (macdBear?1:0) + (bbBear?1:0) + (structureBear?1:0);
+      // FIX BUG 4: include early MACD bear divergence as confirmation
+      const extraConf = (macdBear?1:0) + (macdBearEarly?1:0) + (bbBear?1:0) + (structureBear?1:0);
       dir = (extraConf >= 1 && mtfAligned('VENDER')) ? 'VENDER' : 'ESPERAR';
     }
   }
@@ -1307,8 +1325,8 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   // Simple, correct, proportional to timeframe
   // SL = ATR * multiplier (never fixed %)
   // TP always = 2x SL distance (guaranteed 2:1 R/R)
+  // interval already defined at top of function
   // ==================================================
-  const interval = tfCfg?.interval || '1day';
 
   // -- Step 1: ATR -- candle size for THIS timeframe --
   // Use only the most recent candles to get current volatility
@@ -1750,10 +1768,10 @@ async function runScanner(){
   // Intraday: EMA 5/13, RSI 8, ADX 10 (faster, more responsive)
   // Swing:    EMA 9/21, RSI 14, ADX 14 (classic, less noise)
   const TF_MAP = {
-    '1min': {interval:'1min',  label:'1M',      hold:'5-30 min',     entry:'Inmediato',          review:'Cada minuto',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:30, rsiHi:70, outsize:500},
-    '5min': {interval:'5min',  label:'5M',      hold:'30min-2h',     entry:'Inmediato',          review:'Cada 5 min',   emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:12, rsiLo:35, rsiHi:68, outsize:500},
-    '15min':{interval:'15min', label:'15M',     hold:'1-4 horas',    entry:'Próxima vela 15M',   review:'Cada 15 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
-    '30min':{interval:'30min', label:'30M',     hold:'2-6 horas',    entry:'Próxima vela 30M',   review:'Cada 30 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:15, rsiLo:35, rsiHi:68, outsize:500},
+    '1min': {interval:'1min',  label:'1M',      hold:'5-30 min',     entry:'Inmediato',          review:'Cada minuto',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:18, rsiLo:30, rsiHi:70, outsize:500},
+    '5min': {interval:'5min',  label:'5M',      hold:'30min-2h',     entry:'Inmediato',          review:'Cada 5 min',   emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:18, rsiLo:35, rsiHi:68, outsize:500},
+    '15min':{interval:'15min', label:'15M',     hold:'1-4 horas',    entry:'Próxima vela 15M',   review:'Cada 15 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:20, rsiLo:35, rsiHi:68, outsize:500},
+    '30min':{interval:'30min', label:'30M',     hold:'2-6 horas',    entry:'Próxima vela 30M',   review:'Cada 30 min',  emaF:5, emaS:13, rsiP:8, adxP:10, adxMin:20, rsiLo:35, rsiHi:68, outsize:500},
     '1h':   {interval:'1h',    label:'1H',      hold:'2-8 horas',    entry:'En las próximas 2h', review:'Cada hora',    emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
     '4h':   {interval:'4h',    label:'4H',      hold:'1-3 días',     entry:'Próxima vela 4H',    review:'Cada 4h',      emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:500},
     'daily':{interval:'1day',  label:'Diario',  hold:'3-15 días',    entry:'Apertura mañana',    review:'Cada día',     emaF:9, emaS:21, rsiP:14, adxP:14, adxMin:15, rsiLo:35, rsiHi:70, outsize:0},
