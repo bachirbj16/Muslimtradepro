@@ -200,20 +200,27 @@ tr:hover td{background:var(--bg3)}
       <div style="display:flex;flex-direction:column;gap:7px">
         <div><label class="lbl">Riesgo por trade (%)</label><input class="inp" type="number" id="bRisk" value="1" min="0.1" max="3" step="0.1" style="padding:5px 8px"></div>
         <div><label class="lbl">Máx. posiciones</label><input class="inp" type="number" id="bMaxTrades" value="2" min="1" max="5" style="padding:5px 8px"></div>
-        <div><label class="lbl">SL (pips)</label><input class="inp" type="number" id="bSL" value="15" min="5" max="100" style="padding:5px 8px"></div>
+        <div><label class="lbl">SL · M1:5p M5:15p M15:25p</label><input class="inp" type="number" id="bSL" value="15" min="5" max="100" style="padding:5px 8px"></div>
         <div><label class="lbl">TP (pips) — 0=dinámico</label><input class="inp" type="number" id="bTP" value="0" min="0" max="200" style="padding:5px 8px"></div>
         <div><label class="lbl">Confirmación (pips)</label><input class="inp" type="number" id="bBreak" value="3" min="1" max="20" style="padding:5px 8px"></div>
         <div><label class="lbl">ATR mínimo (pips)</label><input class="inp" type="number" id="bMinATR" value="5" min="1" max="50" style="padding:5px 8px"></div>
       </div>
     </div>
-    <div class="row3" style="margin-top:8px">
-      <div><label class="lbl">Pérd. máx. diaria (%)</label><input class="inp" type="number" id="bMaxLoss" value="3" min="1" max="10" step="0.5" style="padding:5px 8px" title="Bot se detiene si pérdida diaria supera este %"></div>
-      <div><label class="lbl">Trailing stop (pips)</label><input class="inp" type="number" id="bTrail" value="0" min="0" max="50" style="padding:5px 8px" title="0 = sin trailing stop"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:8px">
+      <div><label class="lbl">Pérd. máx. diaria (%)</label><input class="inp" type="number" id="bMaxLoss" value="3" min="1" max="10" step="0.5" style="padding:5px 8px"></div>
+      <div><label class="lbl">Trailing stop (pips)</label><input class="inp" type="number" id="bTrail" value="0" min="0" max="50" style="padding:5px 8px"></div>
       <div><label class="lbl">Filtro sesión</label>
         <select class="inp" id="bSession" style="cursor:pointer;padding:5px 8px">
           <option value="all">Siempre activo</option>
           <option value="london" selected>Londres+NY</option>
           <option value="asian">Solo Asiática</option>
+        </select>
+      </div>
+      <div><label class="lbl">Timeframe bot</label>
+        <select class="inp" id="bTF" style="cursor:pointer;padding:5px 8px" onchange="onBotTFChange()">
+          <option value="M1">M1 · Scalping</option>
+          <option value="M5" selected>M5 · Estándar</option>
+          <option value="M15">M15 · Swing</option>
         </select>
       </div>
     </div>
@@ -227,7 +234,7 @@ tr:hover td{background:var(--bg3)}
 
   <div style="background:var(--bg3);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--mt);line-height:1.9">
     <strong style="color:var(--tx)">Lógica:</strong>
-    1·Analiza 100 candles M5 cada 30s ·
+    1·M1 scalping (10s) · M5 estándar (30s) · M15 swing (60s) ·
     2·Detecta pivots S/R ·
     3·Filtros: ATR, sesión, pérd. diaria, RSI ·
     4·Breakout + EMA9/21 + EMA50 slope + RSI momentum ·
@@ -346,12 +353,12 @@ let TOKEN='',AID='',BASE='https://api-fxpractice.oanda.com';
 let MODE='demo',BAL=10000,NAV=10000;
 let positions=[],trades=[],logs=[],botLogs=[],activeTab='h';
 let activeSym='EUR/USD',activeTF='M5';
-let chart=null,chartKey='',chartBuilding=false; // FIX: chart build guard
-let pollTimer=null,trailTimer=null;
+let chart=null,chartKey='',chartBuilding=false,chartLastBuilt=0;
+let pollTimer=null,trailTimer=null,tickCount=0;
 const candleCache={};
 const SR={};
 // BOT state
-let botActive=false,botTimer=null,botRunning=false;
+let botActive=false,botTimer=null,botRunning=false,lastSessionLog=0;
 const botState={};
 Object.keys(INSTR).forEach(sym=>botState[sym]={lastSignalTime:0,lastSide:null});
 // Bot performance stats
@@ -416,9 +423,17 @@ function heartbeat(){
 
 // ═══════════════ OANDA API ═══════════════════════════════════
 async function oaFetch(path,opts={}){
-  const r=await fetch(BASE+path,{...opts,headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});
-  if(!r.ok){const e=await r.json().catch(()=>({errorMessage:'HTTP '+r.status}));throw new Error(e.errorMessage||e.errorCode||'HTTP '+r.status);}
-  return r.json();
+  // BUG4 FIX: 8s timeout prevents infinite hangs
+  const ctrl=new AbortController();
+  const tid=setTimeout(()=>ctrl.abort(),8000);
+  try{
+    const r=await fetch(BASE+path,{...opts,signal:ctrl.signal,headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});
+    if(!r.ok){const e=await r.json().catch(()=>({errorMessage:'HTTP '+r.status}));throw new Error(e.errorMessage||e.errorCode||'HTTP '+r.status);}
+    return r.json();
+  }catch(e){
+    if(e.name==='AbortError')throw new Error('Timeout — OANDA no respondió en 8s');
+    throw e;
+  }finally{clearTimeout(tid);}
 }
 
 // ═══════════════ CONNECT ══════════════════════════════════════
@@ -467,9 +482,18 @@ function setProgress(p){document.getElementById('pb').style.width=p+'%';}
 // ═══════════════ POLL ════════════════════════════════════════
 function startPoll(ms){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(tick,ms);}
 async function tick(){
-  if(MODE==='live'){await Promise.all([fetchAccount(),fetchPrices(),fetchTrades()]);}
+  tickCount++;
+  if(MODE==='live'){
+    // BUG5 FIX: fetchAccount throttled — only every 6th tick (~30s) to save API calls
+    const fns=[fetchPrices(),fetchTrades()];
+    if(tickCount%6===0)fns.push(fetchAccount());
+    await Promise.all(fns);
+  }
   else{simPrices();simPnL();}
-  renderWL();updatePanel();uRC();buildChart(false);updateSRBar();updateSessionDisplay();
+  renderWL();updatePanel();uRC();
+  // BUG6 FIX: always update SR bar from latest SR data, even without chart rebuild
+  updateSRBar();updateSessionDisplay();
+  await buildChart(false);
 }
 
 // ═══════════════ LIVE DATA ═══════════════════════════════════
@@ -536,7 +560,8 @@ async function fetchTrades(){
 async function getCandles(sym,tf,count){
   const key=sym+tf+count;
   const now=Date.now();
-  if(candleCache[key]&&now-candleCache[key].ts<25000)return candleCache[key].data;
+  const cacheTTL={M1:5000,M5:25000,M15:60000,H1:120000,H4:300000,D1:600000};
+  if(candleCache[key]&&now-candleCache[key].ts<(cacheTTL[tf]||25000))return candleCache[key].data;
   try{
     const data=await oaFetch('/v3/instruments/'+INSTR[sym].oanda+'/candles?count='+count+'&granularity='+(TF_MAP[tf]||'M5')+'&price=M');
     const candles=data.candles.map(c=>({o:parseFloat(c.mid.o),h:parseFloat(c.mid.h),l:parseFloat(c.mid.l),c:parseFloat(c.mid.c)}));
@@ -676,7 +701,20 @@ function startBot(){
   document.getElementById('botMsg').style.color='var(--p)';
   botLog('Bot iniciado · '+new Date().toLocaleTimeString('es'));
   runBot();
-  botTimer=setInterval(runBot,30000);
+  const botTFv=document.getElementById('bTF')?.value||'M5';
+  const botInterval=botTFv==='M1'?10000:botTFv==='M15'?60000:30000;
+  document.getElementById('botMsg').textContent='✓ Bot activo · '+botTFv+' · análisis cada '+(botInterval/1000)+'s';
+  botTimer=setInterval(runBot,botInterval);
+}
+
+function onBotTFChange(){
+  if(botActive){
+    if(botTimer)clearInterval(botTimer);
+    const tf=document.getElementById('bTF')?.value||'M5';
+    const interval=tf==='M1'?10000:tf==='M15'?60000:30000;
+    botTimer=setInterval(runBot,interval);
+    botLog('Timeframe cambiado a '+tf+' · intervalo '+(interval/1000)+'s');
+  }
 }
 
 function stopBot(){
@@ -701,9 +739,12 @@ async function runBot(){
       botLog('🛑 Límite pérdida diaria alcanzado ($'+botStats.dailyLoss.toFixed(2)+') — bot pausado hasta mañana');
       stopBot();return;
     }
-    // Session filter
+    // Session filter — log max once per 5 min to avoid spam
     if(!isSessionActive()){
-      botLog('⏰ Fuera de sesión activa — saltando análisis');
+      if(Date.now()-lastSessionLog>300000){
+        botLog('⏰ Fuera de sesión activa — saltando hasta sesión London/NY');
+        lastSessionLog=Date.now();
+      }
       return;
     }
     const maxTrades=parseInt(document.getElementById('bMaxTrades').value)||2;
@@ -729,13 +770,17 @@ async function analyzePair(sym){
   const minATR=parseFloat(document.getElementById('bMinATR').value)||5;
   const riskPct=parseFloat(document.getElementById('bRisk').value)||1;
 
-  let candles=MODE==='live'?await getCandles(sym,'M5',100):genCandles(PX[sym].mid||DEFAULTS[sym],100,pip);
+  const botTF=document.getElementById('bTF')?.value||'M5';
+  const botCount=botTF==='M1'?120:botTF==='M15'?80:100;
+  let candles=MODE==='live'?await getCandles(sym,botTF,botCount):genCandles(PX[sym].mid||DEFAULTS[sym],botCount,pip);
   if(!candles||candles.length<20){botLog(sym+' · Sin candles');return;}
 
   const sr=detectSR(candles,pip);
   SR[sym]=sr;
 
-  if(sr.atrPips<minATR){botLog(sym+' · ATR '+sr.atrPips+'p < mín — mercado plano');return;}
+  // For M1, scale ATR minimum down proportionally
+  const atrScale=botTF==='M1'?0.3:botTF==='M15'?2.0:1.0;
+  if(sr.atrPips<minATR*atrScale){botLog(sym+' · ATR '+sr.atrPips+'p < mín '+(minATR*atrScale).toFixed(1)+'p ['+botTF+'] — plano');return;}
 
   const closes=candles.map(c=>c.c);
   const e9=calcEMA(closes,9),e21=calcEMA(closes,21),e50=calcEMA(closes,50);
@@ -745,32 +790,56 @@ async function analyzePair(sym){
 
   const li=candles.length-1,pi=candles.length-2;
   const cur=PX[sym].mid||candles[li].c;
-  const e50Slope=e50[li]-e50[li-5];
+  // BUG2 FIX: guard li>=5 to prevent NaN slope blocking all signals
+  const e50Slope=li>=5?(e50[li]-e50[li-5]):0;
   const trendUp=e50Slope>0,trendDown=e50Slope<0;
   const breakDist=breakPips*pip;
 
   let signal=null;
 
-  // BUY: resistance breakout + EMA cross + EMA50 up + RSI 45-65 (momentum, not overbought)
-  if(sr.resistance&&trendUp){
+  // Detailed filter diagnostics
+  const diagR=sr.resistance?'R@'+sr.resistance.price.toFixed(d):'noR';
+  const diagS=sr.support?'S@'+sr.support.price.toFixed(d):'noS';
+
+  // BUY: resistance breakout + EMA9>EMA21 + EMA50 slope up OR flat + RSI 40-72
+  if(sr.resistance){
     const res=sr.resistance.price;
-    if(candles[pi].c<res&&cur>(res+breakDist)&&e9[li]>e21[li]&&candles[li].c>candles[li].o&&rsi>=45&&rsi<=70){
+    const broke=candles[pi].c<res&&cur>(res+breakDist);
+    const emaConf=e9[li]>e21[li];
+    // FIX: relaxed EMA50 — slope up OR nearly flat (within 0.5 ATR)
+    const trendOk=e50Slope>=0||Math.abs(e50Slope)<sr.atr*0.5;
+    const rsiOk=rsi>=40&&rsi<=72;
+    const candleOk=candles[li].c>candles[li].o;
+    if(broke&&emaConf&&trendOk&&rsiOk&&candleOk){
       let tp=tpPipsFixed>0?tpPipsFixed:slPips*2;
       if(tpPipsFixed===0&&sr.nextRes){const dp=Math.round((sr.nextRes.price-cur)/pip);if(dp>slPips)tp=dp;}
       signal={type:'BUY',tpPips:tp,reason:'Breakout R '+res.toFixed(d)+' RSI:'+rsi+' ATR:'+sr.atrPips+'p'};
+    } else if(broke){
+      // Breakout confirmed but another filter blocked — log this (useful info)
+      const why=!emaConf?'EMA9<EMA21':!trendOk?'EMA50 bajista':!rsiOk?'RSI:'+rsi+' (40-72)':!candleOk?'vela bajista':'?';
+      botLog(sym+' BUY breakout ✓ — bloqueado: '+why);
     }
-  }
-  // SELL: support breakout + EMA cross + EMA50 down + RSI 30-55
-  if(!signal&&sr.support&&trendDown){
+
+  // SELL: support breakout + EMA9<EMA21 + EMA50 slope down OR flat + RSI 28-60
+  if(!signal&&sr.support){
     const sup=sr.support.price;
-    if(candles[pi].c>sup&&cur<(sup-breakDist)&&e9[li]<e21[li]&&candles[li].c<candles[li].o&&rsi>=30&&rsi<=55){
+    const broke=candles[pi].c>sup&&cur<(sup-breakDist);
+    const emaConf=e9[li]<e21[li];
+    const trendOk=e50Slope<=0||Math.abs(e50Slope)<sr.atr*0.5;
+    const rsiOk=rsi>=28&&rsi<=60;
+    const candleOk=candles[li].c<candles[li].o;
+    if(broke&&emaConf&&trendOk&&rsiOk&&candleOk){
       let tp=tpPipsFixed>0?tpPipsFixed:slPips*2;
       if(tpPipsFixed===0&&sr.nextSup){const dp=Math.round((cur-sr.nextSup.price)/pip);if(dp>slPips)tp=dp;}
       signal={type:'SELL',tpPips:tp,reason:'Breakout S '+sup.toFixed(d)+' RSI:'+rsi+' ATR:'+sr.atrPips+'p'};
+    } else if(broke){
+      const why=!emaConf?'EMA9>EMA21':!trendOk?'EMA50 alcista':!rsiOk?'RSI:'+rsi+' (28-60)':!candleOk?'vela alcista':'?';
+      botLog(sym+' SELL breakout ✓ — bloqueado: '+why);
     }
   }
 
-  if(!signal){botLog(sym+' · '+cur.toFixed(d)+' · Sin señal · RSI:'+rsi+' ATR:'+sr.atrPips+'p');return;}
+  // Only log no-signal summary if no breakout was close (reduce spam)
+  if(!signal)return;
 
   const st=botState[sym];
   if(st.lastSide===signal.type&&Date.now()-st.lastSignalTime<10*60*1000){
@@ -978,11 +1047,14 @@ function genCandles(base,n,pip){
 // FIX: chartBuilding guard prevents concurrent chart renders
 async function buildChart(force){
   const key=activeSym+activeTF;
-  if(!force&&key===chartKey)return;
-  if(chartBuilding)return; // FIX: prevent concurrent builds
+  // Force refresh based on TF: M1=15s, M5=60s, others=120s
+  const refreshMs={M1:15000,M5:60000,M15:120000,H1:300000,H4:600000,D1:1800000};
+  const timed=Date.now()-chartLastBuilt>(refreshMs[activeTF]||60000);
+  if(!force&&!timed&&key===chartKey)return;
+  if(chartBuilding)return;
   chartBuilding=true;
   try{
-    chartKey=key;
+    chartKey=key;chartLastBuilt=Date.now();
     const{pip,d}=INSTR[activeSym];
     let cc=null;
     if(MODE==='live')cc=await getCandles(activeSym,activeTF,100);
