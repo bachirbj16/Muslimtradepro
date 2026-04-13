@@ -233,15 +233,14 @@ tr:hover td{background:var(--bg3)}
   </div>
   <div class="cmsg" id="botMsg"></div>
 
-  <div style="background:var(--bg3);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--mt);line-height:1.9">
-    <strong style="color:var(--tx)">Lógica:</strong>
-    Scalping máximo: TF=M1, Cooldown=30s, SL=5p, ATR mín=2 · EMA cross + momentum ·
-    2·Detecta pivots S/R ·
-    3·Filtros: ATR, sesión, pérd. diaria, RSI ·
-    4·Breakout + EMA9/21 + EMA50 slope + RSI momentum ·
-    5·TP dinámico al siguiente S/R ·
-    6·Trailing stop opcional ·
-    7·Risk % automático por balance
+  <div style="background:var(--bg3);border-radius:6px;overflow:hidden;border:1px solid var(--bd2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-bottom:1px solid var(--bd)">
+      <span style="font-size:10px;font-weight:600;color:var(--mt);text-transform:uppercase;letter-spacing:.5px">Bot Log en vivo</span>
+      <button onclick="botLogs=[];document.getElementById('botLogLive').innerHTML='<div class=ll style=color:var(--ht)>Log limpiado.</div>'" style="background:none;border:1px solid var(--bd2);color:var(--ht);font-size:10px;padding:1px 7px;border-radius:3px;cursor:pointer;font-family:var(--fn)">Limpiar</button>
+    </div>
+    <div id="botLogLive" style="padding:6px 10px;max-height:200px;overflow-y:auto;font-family:var(--mo);font-size:10px;color:var(--mt);line-height:1.9">
+      <div class="ll" style="color:var(--ht)">Inicia el bot para ver actividad aquí.</div>
+    </div>
   </div>
 </div>
 
@@ -700,6 +699,9 @@ function startBot(){
   document.getElementById('btnBotStop').style.display='block';
   document.getElementById('botMsg').textContent='✓ Bot activo — análisis cada 30s';
   document.getElementById('botMsg').style.color='var(--p)';
+  // Clear live panel on start
+  const lp=document.getElementById('botLogLive');
+  if(lp)lp.innerHTML='';
   botLog('Bot iniciado · '+new Date().toLocaleTimeString('es'));
   runBot();
   const botTFv=document.getElementById('bTF')?.value||'M5';
@@ -910,9 +912,26 @@ async function botPlaceOrder(sym,side,lots,slPips,tpPips){
 }
 
 function botLog(m){
-  botLogs.push({t:new Date().toLocaleTimeString('es'),m});
+  const entry={t:new Date().toLocaleTimeString('es'),m};
+  botLogs.push(entry);
   if(botLogs.length>300)botLogs.shift();
+  // Update bottom bar log if on Bot Log tab
   if(activeTab==='b')renderTab();
+  // ALWAYS update live panel on Bot config page (regardless of active tab)
+  const live=document.getElementById('botLogLive');
+  if(live){
+    const color=m.includes('SEÑAL')||m.includes('✅')?'var(--g)':
+                m.includes('❌')?'var(--r)':
+                m.includes('⚠')||m.includes('🛑')?'var(--y)':'var(--mt)';
+    const div=document.createElement('div');
+    div.className='ll';
+    div.style.color=color;
+    div.innerHTML='<span style="color:var(--ht)">['+entry.t+']</span> '+entry.m;
+    // Prepend so newest is at top
+    live.insertBefore(div,live.firstChild);
+    // Keep max 50 entries in live panel
+    while(live.children.length>50)live.removeChild(live.lastChild);
+  }
 }
 
 function updateBotStats(){
