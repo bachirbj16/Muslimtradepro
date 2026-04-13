@@ -819,6 +819,7 @@ async function analyzePair(sym){
       const why=!emaConf?'EMA9<EMA21':!trendOk?'EMA50 bajista':!rsiOk?'RSI:'+rsi+' (40-72)':!candleOk?'vela bajista':'?';
       botLog(sym+' BUY breakout ✓ — bloqueado: '+why);
     }
+  }
 
   // SELL: support breakout + EMA9<EMA21 + EMA50 slope down OR flat + RSI 28-60
   if(!signal&&sr.support){
