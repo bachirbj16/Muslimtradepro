@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="MuslimTrade">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230d1117'/><text y='.9em' font-size='80' x='10'>☪️</text></svg>">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>HalalTrader PRO v7 ✓</title>
+<title>MuslimTrade PRO v15</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -686,7 +686,16 @@ footer{padding:14px 28px;font-size:11px;color:var(--t4);border-top:1px solid var
     </div>
     <div class="card gc gb">
       <div class="card-h"><div><div class="card-title">Historial</div><div class="card-sub" id="trCount">0 resultados</div></div><div id="wrCmp" style="font-size:11px;color:var(--t3);"></div></div>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Ticker</th><th>Dir.</th><th>Entrada</th><th>Salida</th><th>P&L</th><th>Filtros</th><th>Emoción</th><th>Estado</th><th></th></tr></thead><tbody id="trBody"></tbody></table></div>
+      <div style="padding:0 16px 12px;">
+        <button class="btn btn-ghost btn-sm" id="refreshOpenBtn" onclick="refreshOpen()">🔄 Actualizar precios</button>
+        <span style="font-size:10px;color:var(--t4);margin-left:8px;">Consulta el precio actual de las operaciones abiertas y avisa si tocaron SL o TP</span>
+      </div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Ticker</th><th>Dir.</th><th>TF</th><th>Entrada</th><th>Salida</th><th>P&L</th><th>R</th><th>Filtros</th><th>Estado</th><th></th></tr></thead><tbody id="trBody"></tbody></table></div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="card-h"><div><div class="card-title">Rendimiento por temporalidad</div><div class="card-sub">Que TF tiene ventaja real</div></div></div>
+      <div style="padding:12px 16px 16px;" id="tfPerf"></div>
     </div>
   </div>
 
@@ -760,6 +769,9 @@ footer{padding:14px 28px;font-size:11px;color:var(--t4);border-top:1px solid var
             <label class="fl" data-t="cfg_risk">Riesgo por operación (%)</label><input type="number" id="cfgRisk" value="2" step="0.1">
             <div class="f2"><div><label class="fl">Stop Loss (%)</label><input type="number" id="cfgSL" value="5" step="0.1"></div>
             <div><label class="fl">Take Profit (%)</label><input type="number" id="cfgTP" value="10" step="0.1"></div></div>
+            <label class="fl">Comisión por lado (%)</label>
+            <input type="number" id="cfgFee" value="0.05" step="0.01" min="0">
+            <div style="font-size:10px;color:var(--t4);margin:-4px 0 10px;">Se descuenta dos veces (entrada y salida). Sin esto, tu P&L está inflado.</div>
             <label class="fl" data-t="cfg_minf">Filtros mínimos</label>
             <select id="cfgMinF"><option value="2">2+</option><option value="3" selected data-t="f3_short">3+ (recomendado)</option><option value="4">4+</option><option value="5">5/5</option></select>
             <button class="btn btn-primary btn-full btn-h11" onclick="saveCfg()" data-t='cfg_save'>💾 Guardar configuración</button>
@@ -1220,7 +1232,7 @@ function getHigherTFTrend(candles, primaryInterval) {
 function analyze(prices,spyMap,minF,tfCfg=null){
   if(prices.length<20)return null;
 
-  // FIX: interval defined at TOP — used throughout function
+  // FIX: interval defined at TOP -- used throughout function
   const interval = tfCfg?.interval || '1day';
   const isIntraday = ['1min','5min','15min','30min','1h'].includes(interval);
 
@@ -1236,7 +1248,7 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const n=prices.length-1;
   if(!e9[n]||!e21[n])return null;
 
-  // FIX IMPROVEMENT 3: crossover window — 2 candles intraday, 3 for higher TF
+  // FIX IMPROVEMENT 3: crossover window -- 2 candles intraday, 3 for higher TF
   const crossLook = isIntraday ? 2 : 3;
   let cup=false,cdn=false;
   for(let k=Math.max(1,n-crossLook+1);k<=n;k++){
@@ -1269,14 +1281,15 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   const lookMS = Math.min(10, n-1);
   const prevHi = Math.max(...hi.slice(n-lookMS, n));
   const prevLo = Math.min(...lo.slice(n-lookMS, n));
-  // FIX BUG 5: 0.5% tolerance instead of 0.2% — catches more valid breakouts
+  // FIX BUG 5: 0.5% tolerance instead of 0.2% -- catches more valid breakouts
   const structureBull = cl[n] > prevHi * 0.995;
   const structureBear = cl[n] < prevLo * 1.005;
 
   // -- Session filter: US market hours only for intraday --
   let sessionOk = true;
   if(isIntraday){
-    const lastDate = dt[n];
+    // FIX: usar datetime completo -- 'date' viene sin hora y el filtro nunca se aplicaba
+    const lastDate = prices[n].datetime || dt[n];
     if(lastDate && lastDate.includes(' ')){
       const timePart = lastDate.split(' ')[1];
       const [hh, mm] = timePart.split(':').map(Number);
@@ -1287,18 +1300,23 @@ function analyze(prices,spyMap,minF,tfCfg=null){
 
   // -- 5 core filters --------------------------------
   const f1 = cup || cdn;
-  // FIX BUG 3: symmetric RSI ranges — buy 35-70, sell 30-65
+  // FIX BUG 3: symmetric RSI ranges -- buy 35-70, sell 30-65
   const f2b = rn >= RSI_LO     && rn <= RSI_HI;      // buy zone
   const f2s = rn >= (RSI_LO-5) && rn <= (RSI_HI-5);  // sell zone (slightly lower)
   const f3  = an > ADX_MIN;
-  const f4  = spyMap ? (spyMap[dt[n]] !== false) : true;
-  // FIX IMPROVEMENT 2: volume threshold — 85% intraday, 80% daily
+  // FIX: el filtro de mercado debe invertirse para ventas.
+  // Antes exigia SPY alcista para autorizar un VENDER -- vender contra el mercado.
+  const spyBull = spyMap ? (spyMap[dt[n]] !== false) : null;
+  const f4buy  = spyBull === null ? true : spyBull === true;
+  const f4sell = spyBull === null ? true : spyBull === false;
+  const f4 = above ? f4buy : f4sell;
+  // FIX IMPROVEMENT 2: volume threshold -- 85% intraday, 80% daily
   const volThresh = isIntraday ? 0.85 : 0.80;
   const f5  = vm20 > 0 ? vn >= vm20 * volThresh : true;
   const ok  = [f1, f2b||f2s, f3, f4, f5].filter(Boolean).length;
 
   // -- Higher TF trend (MTF confirmation) -------
-  // FIX BUG 1: interval already defined at top — no TDZ error
+  // FIX BUG 1: interval already defined at top -- no TDZ error
   const mtfTrend = getHigherTFTrend(prices, interval);
   const mtfAligned = (dir2) =>
     mtfTrend === 'NEUTRAL' ||
@@ -1310,11 +1328,12 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   if(ok >= Math.min(minF,3) && sessionOk){
     if(above && f2b){
       const extraConf = (macdBull?1:0) + (bbBull?1:0) + (structureBull?1:0);
-      dir = (extraConf >= 1 && mtfAligned('COMPRAR')) ? 'COMPRAR' : 'ESPERAR';
+      // FIX: el contexto de mercado es OBLIGATORIO, no uno de cinco filtros opcionales.
+      // Antes se podia comprar en mercado bajista si otros 3 filtros pasaban.
+      dir = (extraConf >= 1 && mtfAligned('COMPRAR') && f4buy) ? 'COMPRAR' : 'ESPERAR';
     } else if(!above && f2s){
-      // FIX BUG 4: include early MACD bear divergence as confirmation
       const extraConf = (macdBear?1:0) + (macdBearEarly?1:0) + (bbBear?1:0) + (structureBear?1:0);
-      dir = (extraConf >= 1 && mtfAligned('VENDER')) ? 'VENDER' : 'ESPERAR';
+      dir = (extraConf >= 1 && mtfAligned('VENDER') && f4sell) ? 'VENDER' : 'ESPERAR';
     }
   }
 
@@ -1352,7 +1371,35 @@ function analyze(prices,spyMap,minF,tfCfg=null){
   // Hard cap: SL can never exceed these % from price
   const MAX_SL = {'1min':0.003,'5min':0.006,'15min':0.010,'30min':0.015,'1h':0.025,'4h':0.045,'1day':0.075,'1week':0.12};
   const maxSlDist = lp * (MAX_SL[interval] || 0.06);
-  const finalSlDist = Math.min(slDistance, maxSlDist);
+
+  // FIX CRITICO: suelo minimo de SL
+  // Sin esto el ATR intradia produce stops de 0.09% -- por debajo del ruido
+  // de una sola vela y del spread. El stop saltaba SIEMPRE.
+  // Tres restricciones, gana la mas amplia:
+  //   a) suelo fijo por temporalidad
+  //   b) 2x el rango medio de vela reciente (ruido real del activo)
+  //   c) 4x el coste de ida y vuelta (comisiones no pueden dominar)
+  const MIN_SL = {'1min':0.0015,'5min':0.0025,'15min':0.004,'30min':0.0055,'1h':0.008,'4h':0.015,'1day':0.025,'1week':0.04};
+
+  // Rango medio de las ultimas 10 velas = ruido real del activo
+  let rangeSum = 0, rangeCount = 0;
+  for(let k = Math.max(1, n-9); k <= n; k++){
+    if(hi[k] != null && lo[k] != null){ rangeSum += (hi[k] - lo[k]); rangeCount++; }
+  }
+  const avgRange = rangeCount ? rangeSum / rangeCount : atr;
+
+  let feeRt = 0.001;                                     // 0.05% por lado por defecto
+  try{ const _c = loadCfg(); feeRt = ((_c.feePct||0.05)/100) * 2; }catch(e){}
+
+  const slFloor = Math.max(
+    lp * (MIN_SL[interval] || 0.01),   // a
+    avgRange * 2,                      // b
+    lp * feeRt * 4                     // c
+  );
+
+  // El suelo manda sobre el techo: si chocan, el stop debe ser operable
+  const cappedSl    = Math.min(slDistance, maxSlDist);
+  const finalSlDist = Math.max(cappedSl, slFloor);
 
   // -- Step 3: VWAP (tight session window) ----------
   const VWAP_LB = {'1min':20,'5min':20,'15min':16,'30min':14,'1h':12,'4h':10,'1day':20,'1week':12};
@@ -1411,10 +1458,9 @@ function analyze(prices,spyMap,minF,tfCfg=null){
     tp2 = lp + finalSlDist * 3.0;
   }
 
-  // Minimum SL distance (never zero)
-  const minSlDist = Math.max(atr * 0.3, lp * 0.0002);
-  if(dir === 'COMPRAR' && (lp - sl) < minSlDist) sl = lp - minSlDist;
-  if(dir === 'VENDER'  && (sl - lp) < minSlDist) sl = lp + minSlDist;
+  // El viejo suelo era 0.02% -- inservible. Se usa slFloor (ruido + coste).
+  if(dir === 'COMPRAR' && (lp - sl) < slFloor) sl = lp - slFloor;
+  if(dir === 'VENDER'  && (sl - lp) < slFloor) sl = lp + slFloor;
 
   // Recalculate TP to always be exactly 2:1 and 3:1 from actual SL
   const actualSlDist = Math.abs(lp - sl);
@@ -1580,7 +1626,7 @@ async function _fetchAVonce(ticker, days, interval='1day', outsize=0) {
     .reverse()
     .filter(v => !cutoff || v.datetime >= cutoff)
     .map(v => ({
-      date: v.datetime.split(' ')[0], ticker: upper,
+      date: v.datetime.split(' ')[0], datetime: v.datetime, ticker: upper,
       open: parseFloat(v.open), high: parseFloat(v.high),
       low: parseFloat(v.low), close: parseFloat(v.close),
       vol: parseFloat(v.volume) || 0,
@@ -2006,6 +2052,24 @@ async function runScanner(){
         ${s.sessionWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.26 25/0.1);border:1px solid oklch(0.65 0.26 25/0.25);border-radius:9px;font-size:11px;color:var(--red-t);">🕐 ${s.sessionWarn}</div>`:''}
 
         ${(()=>{
+          // Aviso de viabilidad: el TP debe superar el coste de ida y vuelta con margen
+          const tpPct = parseFloat(s.levels?.tpPct||0);
+          const slPct = parseFloat(s.levels?.slPct||0);
+          if(!tpPct||!slPct) return '';
+          let feeRt = 0.1;
+          try{ feeRt = (loadCfg().feePct||0.05)*2; }catch(e){}
+          const netWin  = tpPct - feeRt;
+          const netLoss = slPct + feeRt;
+          if(netWin <= 0) return `<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.65 0.26 25/0.12);border:1px solid oklch(0.65 0.26 25/0.3);border-radius:9px;font-size:11px;color:var(--red-t);">
+            ⛔ <strong>No operable:</strong> el objetivo (${tpPct}%) no cubre las comisiones (${feeRt.toFixed(2)}% ida y vuelta). Ganarias dinero solo en teoria.</div>`;
+          const beWr = Math.round(netLoss/(netLoss+netWin)*100);
+          if(beWr >= 60) return `<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">
+            ⚠️ <strong>Necesitas ${beWr}% de acierto solo para no perder</strong> tras comisiones. Muy exigente para esta temporalidad.</div>`;
+          return `<div style="margin:0 16px 10px;padding:7px 12px;background:oklch(0.65 0.20 165/0.08);border-radius:9px;font-size:10.5px;color:var(--t3);">
+            ✓ Punto de equilibrio: <strong style="color:var(--green-t);">${beWr}%</strong> de acierto tras comisiones</div>`;
+        })()}
+
+        ${(()=>{
           const f=s.fundData;
           if(!f) return '';
           const sector = (()=>{for(const g of ASSETS_DATA){if(g.items.includes(s.ticker))return g.g;}return null;})();
@@ -2025,7 +2089,7 @@ async function runScanner(){
         })()}
 
         ${levelsHtml}
-        ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'${s.tf}')">✨ ${t('sig_import')}</button></div>`:''}
+        ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'${s.tfLabel||s.tf}','${lv.entryLow||''}','${lv.sl||''}','${lv.tp||''}','${lv.rr||''}')">✨ ${t('sig_import')}</button></div>`:''}
       </div>`;
     }).join('');
 
@@ -2132,15 +2196,39 @@ async function runScanner(){
   }
 }
 
-function importSig(ticker,dir,filters,tf){
-  document.getElementById('fTicker').value=ticker;
-  document.getElementById('fDir').value=dir;
-  document.getElementById('fDate').value=new Date().toISOString().split('T')[0];
-  const pills=document.querySelectorAll('.jp');
-  pills.forEach((p,i)=>{i<filters?p.classList.add('ok'):p.classList.remove('ok');});
-  document.getElementById('importedFrom').style.display='block';
+// Temporalidad de la ultima senal importada (se guarda con la operacion)
+let importedTF = null;
+let importedRR = null;
+
+function importSig(ticker,dir,filters,tf,entry,sl,tp,rr){
+  const $=id=>document.getElementById(id);
+  $('fTicker').value=ticker;
+  $('fDir').value=dir;
+  $('fDate').value=new Date().toISOString().split('T')[0];
+
+  // Niveles calculados por el motor -- ya no se copian a mano
+  if(entry!=null&&entry!==''&&!isNaN(+entry)) $('fEntry').value=(+entry).toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+  if(sl!=null   &&sl!==''   &&!isNaN(+sl))    $('fSL').value   =(+sl).toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+  if(tp!=null   &&tp!==''   &&!isNaN(+tp))    $('fTP').value   =(+tp).toFixed(4).replace(/0+$/,'').replace(/\.$/,'');
+
+  // Tamano de posicion segun capital y riesgo configurados
+  const e=+$('fEntry').value, s=+$('fSL').value;
+  if(e>0&&s>0&&e!==s){
+    const cfg=loadCfg();
+    const slPct=Math.abs(e-s)/e;
+    let size=(cfg.capital*(cfg.risk/100))/slPct;
+    size=Math.min(size,cfg.capital);          // nunca mas del capital total
+    $('fSize').value=Math.round(size);
+  }
+
+  importedTF=tf||null;
+  importedRR=rr!=null?+rr:null;
+
+  document.querySelectorAll('.jp').forEach((p,i)=>{i<filters?p.classList.add('ok'):p.classList.remove('ok');});
+  $('importedFrom').style.display='block';
+  updPreview();
   go('log',document.querySelectorAll('.ni')[3]);
-  toast(`${ticker} importado al jornal`,'ok');
+  toast(`${ticker} importado con niveles`,'ok');
 }
 
 // ============================================
@@ -2489,7 +2577,7 @@ function renderSig(s){
   const fr=(n,f)=>{if(!f)return`<div class="ap-f"><div class="ap-fn">${n}</div><div class="ap-fv" style="color:var(--t4);">N/A</div></div>`;
     const ok=f.estado==='PASA';
     return`<div class="ap-f"><div class="ap-fn">${n}</div><div class="ap-fv ${ok?'fv-ok':'fv-no'}">${ok?'✓':'✗'} ${f.detalle||''}</div></div>`;}
-  const importBtn=s.direccion!=='ESPERAR'?`<button class="btn btn-ghost btn-sm" onclick="importSig('${s.ticker}','${s.direccion}',${s.filtros_ok||0},'${s.tf==='diario'?'daily':'weekly'}')">→ Jornal</button>`:'';
+  const importBtn=s.direccion!=='ESPERAR'?`<button class="btn btn-ghost btn-sm" onclick="importSig('${s.ticker}','${s.direccion}',${s.filtros_ok||0},'${s.tf==='diario'?'Diario':'Semanal'}','${s.precio_ref||''}','${s.stop_loss||''}','${s.target||''}','')">→ Jornal</button>`:'';
   document.getElementById('sigPanel').innerHTML=`
     <div class="ap-hd">
       <div>
@@ -2568,6 +2656,15 @@ function toggleClose(){
   document.getElementById('closeToggle').textContent=closeVis?'- Ocultar cierre':'+ Añadir cierre';
 }
 
+// R-multiplo: cuantas veces el riesgo inicial se gano o perdio
+// Es la unica metrica comparable entre activos y temporalidades
+function calcR(entry,sl,exit,dir){
+  if(!entry||!sl||!exit||entry===sl) return null;
+  const risk=Math.abs(entry-sl);
+  const move=(exit-entry)*(dir==='COMPRAR'?1:-1);
+  return +(move/risk).toFixed(2);
+}
+
 function updPreview(){
   const cfg=loadCfg();
   const e=+document.getElementById('fEntry').value,sl=+document.getElementById('fSL').value,tp=+document.getElementById('fTP').value,sz=+document.getElementById('fSize').value;
@@ -2602,10 +2699,19 @@ function saveTrade(){
   const reason=document.getElementById('fReason').value;
   const filters=Array.from(document.querySelectorAll('.jp.ok')).map(p=>p.dataset.f);
   const exitDate=document.getElementById('fExitDate').value,exitPrice=+document.getElementById('fExitPrice').value,exitNotes=document.getElementById('fExitNotes').value;
-  let pnl=null,status='open';
-  if(exitPrice&&exitDate){pnl=((exitPrice-entry)/entry)*sz*(dir==='COMPRAR'?1:-1);status='closed';}
+  const cfg=loadCfg();
+  const fees=(cfg.feePct||0)/100;                    // coste por lado (%)
+  let pnl=null,rMult=null,status='open';
+  if(exitPrice&&exitDate){
+    const gross=((exitPrice-entry)/entry)*(dir==='COMPRAR'?1:-1);
+    pnl=(gross-fees*2)*sz;                           // entrada + salida
+    rMult=calcR(entry,sl,exitPrice,dir);
+    status='closed';
+  }
   const trades=JSON.parse(localStorage.getItem(K_TR)||'[]');
-  trades.push({id:Date.now(),ticker,dir,date,entry,sl,tp,size:sz,reason,entryEmo,filters,status,exitDate:exitDate||null,exitPrice:exitPrice||null,exitEmo,exitNotes,pnl});
+  trades.push({id:Date.now(),ticker,dir,date,entry,sl,tp,size:sz,reason,entryEmo,filters,status,
+    exitDate:exitDate||null,exitPrice:exitPrice||null,exitEmo,exitNotes,pnl,
+    tf:importedTF||'Manual', rrPlan:importedRR, rMult});
   localStorage.setItem(K_TR,JSON.stringify(trades));
   // Reset
   ['fTicker','fEntry','fSL','fTP','fSize','fReason','fExitPrice','fExitNotes'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
@@ -2614,6 +2720,7 @@ function saveTrade(){
   document.querySelectorAll('.emo-btn').forEach(b=>b.classList.remove('sel'));
   entryEmo='';exitEmo='';
   document.getElementById('importedFrom').style.display='none';
+  importedTF=null;importedRR=null;
   ['pRisk','pReward','pRatio','pPct'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='--';});
   document.getElementById('riskAlert').innerHTML='';
   if(closeVis)toggleClose();
@@ -2643,7 +2750,7 @@ function renderTrades(){
   const pnlT=closed.reduce((a,t)=>a+(t.pnl||0),0);
   const open=trades.filter(t=>t.status==='open').length;
   document.getElementById('st-total').textContent=trades.length;
-  const wrEl=document.getElementById('st-wr');wrEl.textContent=wr+'%';wrEl.style.color=wr>=73?'var(--green-t)':wr>=50?'var(--amber-t)':'var(--red-t)';
+  const wrEl=document.getElementById('st-wr');wrEl.textContent=wr+'%';wrEl.style.color=wr>=50?'var(--green-t)':wr>=40?'var(--amber-t)':'var(--red-t)';
   const pEl=document.getElementById('st-pnl');pEl.textContent=(pnlT>=0?'+':'')+'$'+pnlT.toFixed(0);pEl.style.color=pnlT>=0?'var(--green-t)':'var(--red-t)';
   document.getElementById('st-open').textContent=open;
   document.getElementById('trCount').textContent=filtered.length+' resultado'+(filtered.length!==1?'s':'');
@@ -2654,9 +2761,64 @@ function renderTrades(){
   const wrFo=wFo.length?Math.round(wFo.filter(t=>t.pnl>0).length/wFo.length*100):null;
   const cmpEl=document.getElementById('wrCmp');
   if(wrF!=null&&wrFo!=null)cmpEl.innerHTML=`Con 4+ filtros: <strong style="color:var(--green-t);">${wrF}%</strong> . Sin: <strong style="color:var(--red-t);">${wrFo}%</strong>`;
+
+  // ---- RENDIMIENTO POR TEMPORALIDAD ----
+  // Responde: que temporalidad funciona de verdad?
+  const perfEl=document.getElementById('tfPerf');
+  if(perfEl){
+    const byTF={};
+    closed.forEach(t=>{
+      const k=t.tf||'Manual';
+      (byTF[k]=byTF[k]||[]).push(t);
+    });
+    const rows=Object.entries(byTF).map(([tfName,arr])=>{
+      const w=arr.filter(t=>t.pnl>0).length;
+      const wrr=Math.round(w/arr.length*100);
+      const rs=arr.map(t=>t.rMult).filter(v=>v!=null);
+      const avgR=rs.length?(rs.reduce((a,b)=>a+b,0)/rs.length):null;
+      const sum=arr.reduce((a,t)=>a+(t.pnl||0),0);
+      return{tfName,n:arr.length,wr:wrr,avgR,sum};
+    }).sort((a,b)=>(b.avgR??-99)-(a.avgR??-99));
+
+    if(!rows.length){
+      perfEl.innerHTML=`<div style="padding:16px;text-align:center;color:var(--t4);font-size:11.5px;line-height:1.6;">
+        Sin operaciones cerradas todavia.<br>Necesitas <strong>20+</strong> para que estos numeros signifiquen algo.</div>`;
+    } else {
+      const totalClosed=closed.length;
+      const warn=totalClosed<20
+        ? `<div style="padding:6px 10px;margin-bottom:8px;background:oklch(0.78 0.16 70/0.1);border-radius:7px;font-size:10px;color:var(--amber-t);">
+             ⚠️ Solo ${totalClosed} operacion(es) cerradas. Muestra insuficiente -- no tomes decisiones con menos de 20.</div>`
+        : '';
+      perfEl.innerHTML=warn+`<table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="color:var(--t4);text-align:left;">
+          <th style="padding:4px 6px;font-weight:600;">TF</th>
+          <th style="padding:4px 6px;font-weight:600;">Ops</th>
+          <th style="padding:4px 6px;font-weight:600;">Acierto</th>
+          <th style="padding:4px 6px;font-weight:600;">R medio</th>
+          <th style="padding:4px 6px;font-weight:600;">P&L</th>
+        </tr></thead><tbody>
+        ${rows.map(r=>{
+          const rCol=r.avgR==null?'var(--t4)':r.avgR>0?'var(--green-t)':'var(--red-t)';
+          const pCol=r.sum>=0?'var(--green-t)':'var(--red-t)';
+          const thin=r.n<10?' opacity:0.55;':'';
+          return `<tr style="border-top:1px solid oklch(1 0 0/0.06);${thin}">
+            <td style="padding:6px;font-weight:700;">${r.tfName}</td>
+            <td style="padding:6px;" class="mono">${r.n}</td>
+            <td style="padding:6px;" class="mono">${r.wr}%</td>
+            <td style="padding:6px;font-weight:700;color:${rCol};" class="mono">${r.avgR==null?'--':(r.avgR>0?'+':'')+r.avgR.toFixed(2)}R</td>
+            <td style="padding:6px;color:${pCol};" class="mono">${r.sum>=0?'+':''}$${r.sum.toFixed(0)}</td>
+          </tr>`;
+        }).join('')}
+        </tbody></table>
+        <div style="margin-top:8px;font-size:9.5px;color:var(--t4);line-height:1.5;">
+          <strong>R medio</strong> es la metrica que importa: cuanto ganas por cada unidad arriesgada.
+          Positivo = la temporalidad tiene ventaja. Filas atenuadas = menos de 10 operaciones.
+        </div>`;
+    }
+  }
   const EMOS={calm:'😌 Tranquilo',confident:'💪 Seguro',fomo:'😰 FOMO',fear:'😨 Miedo',greedy:'🤑 Codicioso',disciplined:'🎯 Disciplinado',relieved:'😅 Aliviado',regret:'😞 Arrepentido'};
   const tbody=document.getElementById('trBody');
-  if(!filtered.length){tbody.innerHTML=`<tr><td colspan="9" style="text-align:center;color:var(--t4);padding:28px;font-size:12px;">Sin operaciones</td></tr>`;return;}
+  if(!filtered.length){tbody.innerHTML=`<tr><td colspan="10" style="text-align:center;color:var(--t4);padding:28px;font-size:12px;">Sin operaciones</td></tr>`;return;}
   tbody.innerHTML=[...filtered].reverse().map(t=>{
     const rc=t.status==='open'?'row-o':t.pnl>0?'row-w':'row-l';
     const pnlS=t.pnl!=null?`<span style="font-weight:700;font-family:DM Mono,monospace;color:${t.pnl>=0?'var(--green-t)':'var(--red-t)'};">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</span>`:'--';
@@ -2664,7 +2826,16 @@ function renderTrades(){
     const sC=t.status==='open'?'c-wait':t.pnl>0?'c-buy':'c-sell';
     const sL=t.status==='open'?'Abierta':t.pnl>0?'Ganadora':'Perdedora';
     const cb=t.status==='open'?`<button class="btn btn-ghost btn-sm" onclick="openClose(${t.id})">Cerrar</button>`:'';
-    return`<tr class="${rc}"><td><strong class="mono">${t.ticker}</strong></td><td><span class="chip ${t.dir==='COMPRAR'?'c-buy':'c-sell'}">${t.dir}</span></td><td><div style="font-size:12px;">${t.date}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.entry?.toFixed(2)||'--'}</div></td><td>${t.exitDate?`<div style="font-size:12px;">${t.exitDate}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.exitPrice?.toFixed(2)||'--'}</div>`:'<span style="color:var(--t4);">--</span>'}</td><td>${pnlS}</td><td><span class="chip ${fC}">${t.filters?.length||0}/5</span></td><td style="font-size:11.5px;color:var(--t3);">${EMOS[t.entryEmo]||t.entryEmo||'--'}</td><td><span class="chip ${sC}">${sL}</span></td><td style="display:flex;gap:3px;">${cb}<button class="btn btn-sm" style="background:var(--red-bg);color:var(--red-t);padding:4px 9px;" onclick="delTrade(${t.id})">✕</button></td></tr>`;
+    // Operacion abierta con precio actualizado -> muestra P&L no realizado
+    const liveS = t.status==='open'&&t.lastPrice!=null
+      ? `<div class="mono" style="font-size:11px;color:${t.unrealPnl>=0?'var(--green-t)':'var(--red-t)'};">${t.unrealPnl>=0?'+':''}$${(t.unrealPnl||0).toFixed(0)}</div><div style="font-size:9px;color:var(--t4);">en vivo $${t.lastPrice.toFixed(2)}</div>`
+      : pnlS;
+    const rVal = t.status==='closed' ? t.rMult : t.unrealR;
+    const rS = rVal!=null
+      ? `<span class="mono" style="font-weight:700;color:${rVal>=0?'var(--green-t)':'var(--red-t)'};">${rVal>=0?'+':''}${rVal.toFixed(2)}R</span>`
+      : '<span style="color:var(--t4);">--</span>';
+    const tfS = `<span style="font-size:10px;color:var(--t3);">${t.tf||'Manual'}</span>`;
+    return`<tr class="${rc}"><td><strong class="mono">${t.ticker}</strong></td><td><span class="chip ${t.dir==='COMPRAR'?'c-buy':'c-sell'}">${t.dir}</span></td><td>${tfS}</td><td><div style="font-size:12px;">${t.date}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.entry?.toFixed(2)||'--'}</div></td><td>${t.exitDate?`<div style="font-size:12px;">${t.exitDate}</div><div class="mono" style="font-size:11px;color:var(--t3);">$${t.exitPrice?.toFixed(2)||'--'}</div>`:'<span style="color:var(--t4);">--</span>'}</td><td>${liveS}</td><td>${rS}</td><td><span class="chip ${fC}">${t.filters?.length||0}/5</span></td><td><span class="chip ${sC}">${sL}</span></td><td style="display:flex;gap:3px;">${cb}<button class="btn btn-sm" style="background:var(--red-bg);color:var(--red-t);padding:4px 9px;" onclick="delTrade(${t.id})">✕</button></td></tr>`;
   }).join('');
 }
 function openClose(id){
@@ -2672,10 +2843,60 @@ function openClose(id){
   const d=prompt('Fecha (YYYY-MM-DD):',new Date().toISOString().split('T')[0]);if(!d)return;
   const trades=JSON.parse(localStorage.getItem(K_TR)||'[]');
   const t=trades.find(x=>x.id===id);if(!t)return;
-  t.exitPrice=+p;t.exitDate=d;t.status='closed';t.pnl=((+p-t.entry)/t.entry)*t.size*(t.dir==='COMPRAR'?1:-1);
+  const cfgC=loadCfg(); const feeC=(cfgC.feePct||0)/100;
+  t.exitPrice=+p;t.exitDate=d;t.status='closed';
+  t.pnl=(((+p-t.entry)/t.entry)*(t.dir==='COMPRAR'?1:-1)-feeC*2)*t.size;
+  t.rMult=calcR(t.entry,t.sl,+p,t.dir);
   localStorage.setItem(K_TR,JSON.stringify(trades));renderTrades();updateSidebarStats();
   toast(`${t.ticker} cerrada . P&L: ${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}`,t.pnl>=0?'ok':'warn');
 }
+// Actualiza el precio actual de todas las operaciones abiertas
+// 1 sola llamada batch a Twelvedata -- muestra P&L no realizado y avisa si toco SL/TP
+async function refreshOpen(){
+  const btn=document.getElementById('refreshOpenBtn');
+  const trades=JSON.parse(localStorage.getItem(K_TR)||'[]');
+  const open=trades.filter(t=>t.status==='open');
+  if(!open.length){toast('No hay operaciones abiertas','info');return;}
+  const key=localStorage.getItem(K_TDKEY)||'';
+  if(!key){toast('Configura tu clave Twelvedata primero','warn');return;}
+
+  if(btn){btn.disabled=true;btn.textContent='⏳ Actualizando...';}
+  const FX=new Set(['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD']);
+  const MAP={XAUUSD:'XAU/USD',XAGUSD:'XAG/USD'};
+  const sym=t=>FX.has(t)?t.slice(0,3)+'/'+t.slice(3,6):(MAP[t]||t);
+  const uniq=[...new Set(open.map(t=>t.ticker))];
+
+  try{
+    const r=await fetch(`https://api.twelvedata.com/price?symbol=${uniq.map(sym).join(',')}&apikey=${key}`);
+    const j=await r.json();
+    let hits=0, alerts=[];
+    open.forEach(t=>{
+      const s=sym(t.ticker);
+      const raw=uniq.length===1 ? j.price : (j[s]&&j[s].price);
+      const px=parseFloat(raw);
+      if(!isFinite(px))return;
+      t.lastPrice=px; t.lastPriceAt=new Date().toISOString();
+      const cfgR=loadCfg(), feeR=(cfgR.feePct||0)/100;
+      t.unrealPnl=(((px-t.entry)/t.entry)*(t.dir==='COMPRAR'?1:-1)-feeR*2)*t.size;
+      t.unrealR=calcR(t.entry,t.sl,px,t.dir);
+      hits++;
+      // Aviso si el precio ya cruzo el stop o el objetivo
+      if(t.sl&&((t.dir==='COMPRAR'&&px<=t.sl)||(t.dir==='VENDER'&&px>=t.sl)))
+        alerts.push(`${t.ticker}: precio en SL ($${px.toFixed(2)})`);
+      else if(t.tp&&((t.dir==='COMPRAR'&&px>=t.tp)||(t.dir==='VENDER'&&px<=t.tp)))
+        alerts.push(`${t.ticker}: precio en TP ($${px.toFixed(2)})`);
+    });
+    localStorage.setItem(K_TR,JSON.stringify(trades));
+    renderTrades();
+    if(alerts.length) toast('⚠️ '+alerts.join(' | '),'warn');
+    else toast(`${hits} operacion(es) actualizada(s)`,'ok');
+  }catch(e){
+    toast('Error al actualizar: '+e.message,'err');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='🔄 Actualizar precios';}
+  }
+}
+
 async function delTrade(id){
   const ok=await confirm2('Eliminar operación','¿Seguro? No se puede deshacer.');
   if(!ok)return;
@@ -2685,7 +2906,7 @@ async function delTrade(id){
 function exportCSV(){
   const trades=JSON.parse(localStorage.getItem(K_TR)||'[]');
   if(!trades.length){toast('Sin operaciones','warn');return;}
-  const rows=[['Ticker','Dir','Fecha','Precio','SL','TP','Tamaño','Cierre','PrecioCierre','PnL','Filtros','EmoE','EmoS','Estado'],...trades.map(t=>[t.ticker,t.dir,t.date,t.entry,t.sl,t.tp,t.size,t.exitDate||'',t.exitPrice||'',t.pnl?.toFixed(2)||'',t.filters?.join('|')||'',t.entryEmo||'',t.exitEmo||'',t.status])];
+  const rows=[['Ticker','Dir','TF','Fecha','Precio','SL','TP','Tamaño','Cierre','PrecioCierre','PnL','R','RR_plan','Filtros','EmoE','EmoS','Estado'],...trades.map(t=>[t.ticker,t.dir,t.tf||'Manual',t.date,t.entry,t.sl,t.tp,t.size,t.exitDate||'',t.exitPrice||'',t.pnl?.toFixed(2)||'',t.rMult??'',t.rrPlan??'',t.filters?.join('|')||'',t.entryEmo||'',t.exitEmo||'',t.status])];
   const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(rows.map(r=>r.join(',')).join('\n'));a.download=`halaltrader_${new Date().toISOString().split('T')[0]}.csv`;a.click();toast('CSV exportado','ok');
 }
 
@@ -2714,12 +2935,14 @@ function loadWeekly(){
   const notes=JSON.parse(localStorage.getItem(K_WK)||'{}');
   document.getElementById('weekNotes').value=notes[wk]||'';
   const content=document.getElementById('weekContent');
+  const wkRs=closed.map(t=>t.rMult).filter(v=>v!=null);
+  const wkAvgR=wkRs.length?wkRs.reduce((a,b)=>a+b,0)/wkRs.length:null;
   if(!wkTrades.length){content.innerHTML=`<div class="empty" style="margin-top:40px;"><div class="empty-icon">📭</div><div>Sin operaciones del ${start} al ${end}</div></div>`;return;}
   content.innerHTML=`
     <div class="cmp mb">
-      <div class="cmp-c"><div class="cmp-l">Tu Win Rate</div><div class="cmp-v" style="color:${wr>=73?'var(--green-t)':'var(--red-t)'};">${wr}%</div></div>
-      <div class="cmp-c"><div class="cmp-l">Objetivo</div><div class="cmp-v" style="color:var(--primary);">73%</div></div>
-      <div class="cmp-c"><div class="cmp-l">Diferencia</div><div class="cmp-v" style="color:${wr-73>=0?'var(--green-t)':'var(--red-t)'};">${wr-73>=0?'+':''}${wr-73}%</div></div>
+      <div class="cmp-c"><div class="cmp-l">Win Rate</div><div class="cmp-v" style="color:${wr>=50?'var(--green-t)':wr>=40?'var(--amber-t)':'var(--red-t)'};">${wr}%</div></div>
+      <div class="cmp-c"><div class="cmp-l">R medio</div><div class="cmp-v" style="color:${wkAvgR==null?'var(--t4)':wkAvgR>0?'var(--green-t)':'var(--red-t)'};">${wkAvgR==null?'--':(wkAvgR>0?'+':'')+wkAvgR.toFixed(2)+'R'}</div></div>
+      <div class="cmp-c"><div class="cmp-l">Operaciones</div><div class="cmp-v" style="color:var(--primary);">${closed.length}</div></div>
     </div>
     <div class="card"><div class="card-h"><div class="card-title">Operaciones de la semana</div></div>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Ticker</th><th>Dir.</th><th>Fecha</th><th>Filtros</th><th>P&L</th></tr></thead>
@@ -2758,7 +2981,7 @@ function renderProgress(){
   for(const t of [...closed].reverse()){if(t.pnl>0)tmp++;else{if(tmp>streak)streak=tmp;tmp=0;}}
   if(tmp>streak)streak=tmp;
   document.getElementById('pr-total').textContent=trades.length;
-  const wrEl=document.getElementById('pr-wr');wrEl.textContent=wr+'%';wrEl.style.color=wr>=73?'var(--green-t)':wr>=50?'var(--amber-t)':'var(--red-t)';
+  const wrEl=document.getElementById('pr-wr');wrEl.textContent=wr+'%';wrEl.style.color=wr>=50?'var(--green-t)':wr>=40?'var(--amber-t)':'var(--red-t)';
   const pEl=document.getElementById('pr-pnl');pEl.textContent=(pnlT>=0?'+':'')+'$'+pnlT.toFixed(0);pEl.style.color=pnlT>=0?'var(--green-t)':'var(--red-t)';
   document.getElementById('pr-streak').textContent=streak+' ⚡';
   // Equity
@@ -2780,12 +3003,15 @@ function renderProgress(){
   const fC=['oklch(0.3 0.01 260/0.5)','oklch(0.4 0.01 260/0.5)','oklch(0.78 0.16 70/0.5)','oklch(0.78 0.16 70/0.7)','oklch(0.72 0.22 155/0.65)','oklch(0.72 0.22 155/0.95)'];
   mkChart('filterC','bar',{labels:['0','1','2','3','4','5'],datasets:[{label:'WR',data:fWR,backgroundColor:fC,borderRadius:5}]},{...CO,plugins:{legend:{display:false}},scales:{...CO.scales,y:{...CO.scales.y,max:100,ticks:{...CO.scales.y.ticks,callback:v=>v+'%'}}}});
   // Compare
-  const tPnL=closed.length*(cfg.capital*0.02*2*0.73-cfg.capital*0.02*0.27);
+  const pgRs=closed.map(t=>t.rMult).filter(v=>v!=null);
+  const pgAvgR=pgRs.length?pgRs.reduce((a,b)=>a+b,0)/pgRs.length:null;
+  // Referencia: expectativa si cada operacion cumpliera su plan 2:1 con 45% de acierto
+  const tPnL=closed.length*(cfg.capital*(cfg.risk/100))*(0.45*2-0.55);
   document.getElementById('cmpContent').innerHTML=closed.length<3?'<div class="empty" style="padding:16px;font-size:12px;">Necesitas 3+ operaciones cerradas</div>':`
     <div class="cmp" style="margin-bottom:1px;">
-      <div class="cmp-c"><div class="cmp-l">Tu WR</div><div class="cmp-v" style="color:${wr>=73?'var(--green-t)':'var(--red-t)'};">${wr}%</div></div>
-      <div class="cmp-c"><div class="cmp-l">Objetivo</div><div class="cmp-v" style="color:var(--primary);">73%</div></div>
-      <div class="cmp-c"><div class="cmp-l">Diff.</div><div class="cmp-v" style="color:${wr-73>=0?'var(--green-t)':'var(--red-t)'};">${wr-73>=0?'+':''}${wr-73}%</div></div>
+      <div class="cmp-c"><div class="cmp-l">Tu WR</div><div class="cmp-v" style="color:${wr>=50?'var(--green-t)':wr>=40?'var(--amber-t)':'var(--red-t)'};">${wr}%</div></div>
+      <div class="cmp-c"><div class="cmp-l">R medio</div><div class="cmp-v" style="color:${pgAvgR==null?'var(--t4)':pgAvgR>0?'var(--green-t)':'var(--red-t)'};">${pgAvgR==null?'--':(pgAvgR>0?'+':'')+pgAvgR.toFixed(2)+'R'}</div></div>
+      <div class="cmp-c"><div class="cmp-l">Expectativa</div><div class="cmp-v" style="color:${pgAvgR==null?'var(--t4)':pgAvgR>0?'var(--green-t)':'var(--red-t)'};">${pgAvgR==null?'--':pgAvgR>0?'Positiva':'Negativa'}</div></div>
     </div>
     <div class="cmp">
       <div class="cmp-c"><div class="cmp-l">Tu P&L</div><div class="cmp-v" style="color:${pnlT>=0?'var(--green-t)':'var(--red-t)'};">${pnlT>=0?'+':''}$${pnlT.toFixed(0)}</div></div>
@@ -2798,7 +3024,7 @@ function renderProgress(){
 // SETTINGS / CONFIG
 // ============================================
 function loadCfg(){
-  const def={capital:10000,risk:2,sl:5,tp:10,minFilters:3};
+  const def={capital:10000,risk:2,sl:5,tp:10,minFilters:3,feePct:0.05};
   try{return{...def,...JSON.parse(localStorage.getItem(K_CFG)||'{}')};} catch(e){return def;}
 }
 function loadCfgForm(){
@@ -2808,6 +3034,7 @@ function loadCfgForm(){
   document.getElementById('cfgSL').value=cfg.sl;
   document.getElementById('cfgTP').value=cfg.tp;
   document.getElementById('cfgMinF').value=cfg.minFilters;
+  const feeEl=document.getElementById('cfgFee');if(feeEl)feeEl.value=cfg.feePct??0.05;
   const avk=localStorage.getItem(K_TDKEY)||'';
   const avEl=document.getElementById('cfgTD');if(avEl)avEl.value=avk;
   if(avk){const s=document.getElementById('tdStatus');if(s){s.style.display='block';s.style.background='var(--green-bg)';s.style.color='var(--green-t)';s.style.border='1px solid oklch(0.72 0.22 155/0.25)';s.textContent=`✅ Clave guardada: ${avk.slice(0,6)}...`;}}
@@ -2838,7 +3065,7 @@ async function testAV(){
   }
 }
 function saveCfg(){
-  const cfg={capital:+document.getElementById('cfgCap').value,risk:+document.getElementById('cfgRisk').value,sl:+document.getElementById('cfgSL').value,tp:+document.getElementById('cfgTP').value,minFilters:+document.getElementById('cfgMinF').value};
+  const cfg={capital:+document.getElementById('cfgCap').value,risk:+document.getElementById('cfgRisk').value,sl:+document.getElementById('cfgSL').value,tp:+document.getElementById('cfgTP').value,minFilters:+document.getElementById('cfgMinF').value,feePct:+(document.getElementById('cfgFee')?.value??0.05)};
   localStorage.setItem(K_CFG,JSON.stringify(cfg));
   updateSidebarStats();
   toast('Configuración guardada ✓','ok');
@@ -3954,7 +4181,7 @@ function runDemo() {
       ${s.earningsWarn?`<div style="margin:0 16px 10px;padding:8px 12px;background:oklch(0.78 0.16 70/0.12);border:1px solid oklch(0.78 0.16 70/0.3);border-radius:9px;font-size:11px;color:oklch(0.85 0.08 70);">⚠️ ${s.earningsWarn}</div>`:''}
 
       ${levelsHtml}
-      ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'daily')">✨ ${t('sig_import')}</button></div>`:''}
+      ${showBtn?`<div class="sig-action"><button class="imp-btn ${s.dir==='COMPRAR'?'ib-buy':'ib-sell'}" onclick="importSig('${s.ticker}','${s.dir}',${s.ok},'Demo','${lv.entryLow||''}','${lv.sl||''}','${lv.tp||''}','${lv.rr||''}')">✨ ${t('sig_import')}</button></div>`:''}
     </div>`;
   }).join('');
 
